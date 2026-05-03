@@ -216,3 +216,33 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ───────────────── Node / Next.js / web ─────────────────
+node_modules/
+.next/
+out/
+.turbo/
+.npm/
+*.tsbuildinfo
+next-env.d.ts
+
+# Package manager debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local env files (per-app)
+.env.local
+.env.*.local
+apps/web/.env*.local
+services/api/.env
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Claude session artifacts (user-local)
+.claude/

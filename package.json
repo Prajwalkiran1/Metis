@@ -1,0 +1,23 @@
+{
+  "name": "metis",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Metis — AI-native university operating system",
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "dev:web": "npm --workspace apps/web run dev",
+    "build:web": "npm --workspace apps/web run build",
+    "lint:web": "npm --workspace apps/web run lint",
+    "dev:api": "cd services/api && uv run uvicorn app.main:app --reload --port 8000",
+    "test:api": "cd services/api && uv run pytest",
+    "migrate": "cd services/api && uv run alembic upgrade head",
+    "seed": "cd services/api && uv run python -m infra.scripts.seed",
+    "infra:up": "docker compose -f infra/docker/docker-compose.yml up -d",
+    "infra:down": "docker compose -f infra/docker/docker-compose.yml down"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
