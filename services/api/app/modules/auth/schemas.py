@@ -29,5 +29,9 @@ class ResetPasswordConfirm(BaseModel):
     new_password: str = Field(min_length=8, max_length=200)
 
 
+class GoogleLoginRequest(BaseModel):
+    id_token: str = Field(min_length=1)
+
+
 class GenericMessage(BaseModel):
     message: str

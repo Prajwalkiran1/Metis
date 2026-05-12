@@ -77,9 +77,9 @@ ROLE_PERMISSIONS = {
 
 
 DEMO_USERS = [
-    ("admin@bmsce.edu.in", "BMSCE Admin", UserRole.admin),
-    ("teacher@bmsce.edu.in", "BMSCE Teacher", UserRole.teacher),
-    ("student@bmsce.edu.in", "BMSCE Student", UserRole.student),
+    ("admin@bmsce.ac.in", "BMSCE Admin", UserRole.admin),
+    ("teacher@bmsce.ac.in", "BMSCE Teacher", UserRole.teacher),
+    ("student@bmsce.ac.in", "BMSCE Student", UserRole.student),
 ]
 
 
@@ -95,10 +95,14 @@ async def _seed() -> None:
                 name="B.M.S. College of Engineering",
                 code="BMSCE",
                 dpdp_data_fiduciary_name="B.M.S. Educational Trust",
+                email_domain="bmsce.ac.in",
             )
             session.add(college)
             await session.flush()
             created_college = True
+        elif college.email_domain != "bmsce.ac.in":
+            # Backfill for older seeds.
+            college.email_domain = "bmsce.ac.in"
 
         # Roles
         for name, desc in ROLES:

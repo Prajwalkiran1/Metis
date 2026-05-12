@@ -63,6 +63,11 @@ class College(Base, TimestampedMixin):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     code: Mapped[str] = mapped_column(String(40), nullable=False, unique=True)
     dpdp_data_fiduciary_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # Exact-match-only domain check. Sub-domains do not count: a user with
+    # 'foo@student.bmsce.ac.in' is rejected when email_domain='bmsce.ac.in'.
+    email_domain: Mapped[str] = mapped_column(
+        String(80), nullable=False, server_default=text("'bmsce.ac.in'")
+    )
 
 
 class User(Base, TimestampedMixin, SoftDeleteMixin):
@@ -84,6 +89,11 @@ class User(Base, TimestampedMixin, SoftDeleteMixin):
         server_default=text("'invited'"),
     )
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Google OAuth subject (`sub` claim). Bound on first successful Google
+    # sign-in if NULL; subsequent logins must match this exact value so a
+    # Metis account can't be silently hijacked by re-using the same email
+    # on a different Google account.
+    google_sub: Mapped[str | None] = mapped_column(String(80), nullable=True, unique=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     usn: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
     dob: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

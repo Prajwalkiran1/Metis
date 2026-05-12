@@ -707,6 +707,8 @@ module_states:
       - POST   /api/v1/auth/logout
       - POST   /api/v1/auth/reset-password/request
       - POST   /api/v1/auth/reset-password/confirm
+      - POST   /api/v1/auth/google                # post-M2 enhancement
+      - GET    /api/v1/auth/google/config         # post-M2 enhancement
       - POST   /api/v1/users
       - GET    /api/v1/users/me
       - GET    /api/v1/users/{user_id}
@@ -720,11 +722,19 @@ module_states:
     ui_screens_completed: []      # apps/web not started — backend-only M1 by agreement
     ui_screens_skipped:
       - "all: frontend deferred to a dedicated effort"
+    post_m2_auth_enhancements:                   # added after M2 shipped
+      - "Migration 0004 — colleges.email_domain (exact-match, default 'bmsce.ac.in') + users.google_sub (unique)"
+      - "Sign in with Google via GIS — POST /auth/google verifies id_token, enforces email_domain, binds google_sub on first login"
+      - "POST /users — admin invite-create now rejects emails whose domain doesn't match the actor's college (400 bad_domain)"
+      - "Seed flipped to @bmsce.ac.in; demo password unchanged"
+      - "13 auth tests (was 7) — adds domain enforcement + 5 Google-OAuth flows with the verifier mocked"
     known_issues:
-      - "Refresh-token reuse detection not implemented (rotate+revoke only). TODO(M1-hardening) in auth/service.py."
+      - "Refresh-token reuse detection not implemented (rotate+revoke only). TODO(M1-hardening) in auth/service.py. See auth audit at ~/.claude/plans/i-m-starting-module-peaceful-dove.md."
+      - "Access token in localStorage on the frontend — XSS exposure. See auth audit."
+      - "No MFA / passkeys. See auth audit."
       - "FACE_ENROLLMENT_MIN_AGE not enforced. TODO(M1-hardening) in users/service.py."
       - "Profile-photo upload accepts a URL string but no object-storage backend exists yet (lands with M6)."
-    next_session_picks_up_at: "M1 done. Pick up at M2 — academic service. See PROGRESS_M1.md for full file map."
+    next_session_picks_up_at: "M1 + M2 done; auth hardening optional. Pick up at M3 — attendance service. See PROGRESS_M2.md handoff note + ~/.claude/plans/i-m-starting-module-peaceful-dove.md for the auth audit."
     files_created:
       - services/api/app/core/redis.py
       - services/api/app/core/security.py

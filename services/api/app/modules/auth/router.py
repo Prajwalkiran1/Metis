@@ -18,6 +18,7 @@ from app.core.redis import RedisDep
 from . import service
 from .schemas import (
     GenericMessage,
+    GoogleLoginRequest,
     LoginRequest,
     ResetPasswordConfirm,
     ResetPasswordRequest,
@@ -80,6 +81,45 @@ async def login(
         role=tokens.user.role.value,
         college_id=tokens.user.college_id,
     )
+
+
+@router.post("/google", response_model=TokenResponse)
+@limiter.limit(auth_rate_limit())
+async def login_with_google(
+    request: Request,
+    response: Response,
+    body: GoogleLoginRequest,
+    session: SessionDep,
+) -> TokenResponse:
+    try:
+        tokens = await service.login_with_google(
+            session,
+            id_token=body.id_token,
+            ip=get_client_ip(request),
+            user_agent=get_user_agent(request),
+        )
+    except service.AuthError as e:
+        raise _to_http(e) from e
+
+    _set_refresh_cookie(response, tokens.refresh_token)
+    return TokenResponse(
+        access_token=tokens.access_token,
+        expires_in=tokens.expires_in,
+        user_id=tokens.user.id,
+        role=tokens.user.role.value,
+        college_id=tokens.user.college_id,
+    )
+
+
+@router.get("/google/config", response_model=dict)
+async def google_config() -> dict:
+    """Public endpoint — lets the frontend discover whether Google sign-in
+    is enabled and what client ID to use. Reveals only what an attacker
+    could read anyway from the rendered sign-in button."""
+    return {
+        "enabled": bool(settings.google_client_id),
+        "client_id": settings.google_client_id or None,
+    }
 
 
 @router.post("/refresh", response_model=TokenResponse)

@@ -106,6 +106,21 @@ export async function login(email: string, password: string): Promise<Role> {
   return body.role;
 }
 
+export async function loginWithGoogle(idToken: string): Promise<Role> {
+  const body = await api<{ access_token: string; role: Role }>(
+    "/auth/google",
+    { method: "POST", body: { id_token: idToken }, noAuth: true },
+  );
+  setSession(body.access_token, body.role);
+  return body.role;
+}
+
+export type GoogleConfig = { enabled: boolean; client_id: string | null };
+
+export async function fetchGoogleConfig(): Promise<GoogleConfig> {
+  return api<GoogleConfig>("/auth/google/config", { noAuth: true });
+}
+
 export async function logout(): Promise<void> {
   try {
     await api("/auth/logout", { method: "POST" });

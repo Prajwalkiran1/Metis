@@ -15,7 +15,7 @@ from tests.test_auth import DEMO_PASSWORD
 async def _admin_headers(client) -> dict[str, str]:
     resp = await client.post(
         "/auth/login",
-        json={"email": "admin@bmsce.edu.in", "password": DEMO_PASSWORD},
+        json={"email": "admin@bmsce.ac.in", "password": DEMO_PASSWORD},
     )
     assert resp.status_code == 200, resp.text
     return {"Authorization": f"Bearer {resp.json()['access_token']}"}
@@ -28,7 +28,7 @@ async def _teacher_id(client, headers) -> str:
     # No list endpoint; use seeded teacher email directly.
     login = await client.post(
         "/auth/login",
-        json={"email": "teacher@bmsce.edu.in", "password": DEMO_PASSWORD},
+        json={"email": "teacher@bmsce.ac.in", "password": DEMO_PASSWORD},
     )
     assert login.status_code == 200
     t_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
@@ -39,7 +39,7 @@ async def _teacher_id(client, headers) -> str:
 async def _student_id(client) -> str:
     login = await client.post(
         "/auth/login",
-        json={"email": "student@bmsce.edu.in", "password": DEMO_PASSWORD},
+        json={"email": "student@bmsce.ac.in", "password": DEMO_PASSWORD},
     )
     assert login.status_code == 200
     s_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
@@ -51,7 +51,7 @@ async def _make_fresh_teacher(client, admin_headers) -> str:
     """Tests sharing the seeded teacher trip teacher-level conflict checks
     across runs as Friday slots accumulate. Each timetable test mints its
     own teacher to stay isolated."""
-    email = f"teach-{_short()}@bmsce.edu.in"
+    email = f"teach-{_short()}@bmsce.ac.in"
     r = await client.post(
         "/users",
         headers=admin_headers,
@@ -115,7 +115,7 @@ async def test_departments_require_admin(client):
     # Student logs in then tries to create a department.
     login = await client.post(
         "/auth/login",
-        json={"email": "student@bmsce.edu.in", "password": DEMO_PASSWORD},
+        json={"email": "student@bmsce.ac.in", "password": DEMO_PASSWORD},
     )
     h = {"Authorization": f"Bearer {login.json()['access_token']}"}
     r = await client.post(

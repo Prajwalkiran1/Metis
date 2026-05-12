@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     resend_api_key: SecretStr | None = None
     email_from: str = "noreply@metis.local"
 
+    # ── Google OAuth (Sign in with Google) ─────────────────────────────────
+    # OAuth client ID from Google Cloud Console. Leave blank to disable the
+    # Google sign-in path entirely — the /auth/google endpoint will 503 and
+    # the frontend hides its button.
+    google_client_id: str | None = None
+
     # ── Web ────────────────────────────────────────────────────────────────
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:3000"],

@@ -13,7 +13,7 @@ from app.core.config import settings
 from app.core.crypto import encrypt_face_embedding
 from app.core.db import utcnow
 from app.modules.consents.service import grant_consent
-from app.modules.users.models import ConsentPurpose, User, UserRole, UserStatus
+from app.modules.users.models import College, ConsentPurpose, User, UserRole, UserStatus
 from app.modules.users.schemas import FaceEnrollRequest, UserCreate, UserPatch
 
 
@@ -31,10 +31,25 @@ async def create_user(
     actor: User,
     payload: UserCreate,
 ) -> User:
+    email = payload.email.strip().lower()
+
+    # Exact-match domain check against the actor's college. Sub-domains
+    # are intentionally rejected — a college can run a separate Metis
+    # tenant if it has split mail domains.
+    college = await session.get(College, actor.college_id)
+    if college is not None:
+        domain = email.rsplit("@", 1)[-1] if "@" in email else ""
+        if domain != college.email_domain.lower():
+            raise UserError(
+                "bad_domain",
+                f"email must end with @{college.email_domain}",
+                400,
+            )
+
     # Tenant isolation: new users always belong to the actor's college.
     user = User(
         college_id=actor.college_id,
-        email=payload.email.strip().lower(),
+        email=email,
         name=payload.name.strip(),
         role=payload.role,
         status=UserStatus.invited,

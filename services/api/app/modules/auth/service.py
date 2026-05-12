@@ -28,6 +28,7 @@ from app.core.audit import write_audit
 from app.core.config import settings
 from app.core.db import utcnow
 from app.core.email import send_email
+from app.core.google_oauth import GoogleAuthError, verify_google_id_token
 from app.core.security import (
     create_access_token,
     hash_otp,
@@ -40,6 +41,7 @@ from app.core.security import (
 )
 from app.modules.users.models import (
     AuthSession,
+    College,
     LoginAttempt,
     PasswordResetToken,
     User,
@@ -151,6 +153,124 @@ async def login(
     await write_audit(
         session,
         action="auth.login",
+        entity_type="user",
+        entity_id=user.id,
+        actor_user_id=user.id,
+        college_id=user.college_id,
+        ip=ip,
+        user_agent=user_agent,
+    )
+    await session.commit()
+    return tokens
+
+
+async def login_with_google(
+    session: AsyncSession,
+    *,
+    id_token: str,
+    ip: str | None,
+    user_agent: str | None,
+) -> IssuedTokens:
+    """Sign-in via Google Identity Services.
+
+    Flow:
+      1. Verify the Google ID token (signature + audience + email_verified).
+      2. Look up the Metis user by lower(email). No auto-create — admins
+         must invite the user first; same playbook as M1's invite flow.
+      3. Enforce the user's college email_domain against the Google email.
+      4. Bind google_sub on first login; reject mismatched sub on later
+         logins (prevents account hijack via re-used emails).
+      5. Issue the standard Metis access + refresh token pair.
+    """
+    try:
+        claims = verify_google_id_token(id_token)
+    except GoogleAuthError as e:
+        # Map "google not configured" to 503; everything else to 401.
+        status = 503 if e.code == "google_disabled" else 401
+        raise AuthError(e.code, e.message, status) from e
+
+    google_email = claims["email"].strip().lower()
+    google_sub = str(claims["sub"])
+
+    user = await _find_active_user_by_email(session, google_email)
+    if user is None:
+        await _log_attempt(
+            session,
+            email=google_email,
+            ip=ip,
+            success=False,
+            reason="google_no_account",
+        )
+        await session.commit()
+        raise AuthError(
+            "no_account",
+            "no Metis account on this college — ask your admin to invite you",
+            403,
+        )
+
+    college = await session.get(College, user.college_id)
+    if college is None:
+        raise AuthError("orphan", "user has no college (corrupt state)", 500)
+
+    domain = google_email.rsplit("@", 1)[-1] if "@" in google_email else ""
+    if domain != college.email_domain.lower():
+        await _log_attempt(
+            session,
+            email=google_email,
+            college_id=user.college_id,
+            ip=ip,
+            success=False,
+            reason="google_bad_domain",
+        )
+        await session.commit()
+        raise AuthError(
+            "bad_domain",
+            f"email must end with @{college.email_domain}",
+            403,
+        )
+
+    if user.status != UserStatus.active:
+        await _log_attempt(
+            session,
+            email=google_email,
+            college_id=user.college_id,
+            ip=ip,
+            success=False,
+            reason=f"status_{user.status.value}",
+        )
+        await session.commit()
+        raise AuthError("inactive", f"account is {user.status.value}", 403)
+
+    if user.google_sub is None:
+        user.google_sub = google_sub
+    elif user.google_sub != google_sub:
+        await _log_attempt(
+            session,
+            email=google_email,
+            college_id=user.college_id,
+            ip=ip,
+            success=False,
+            reason="google_sub_mismatch",
+        )
+        await session.commit()
+        raise AuthError(
+            "sub_mismatch",
+            "this email is already linked to a different Google account",
+            403,
+        )
+
+    await _log_attempt(
+        session,
+        email=google_email,
+        college_id=user.college_id,
+        ip=ip,
+        success=True,
+    )
+
+    tokens = await _issue_tokens(session, user=user, ip=ip, user_agent=user_agent)
+    await write_audit(
+        session,
+        action="auth.login.google",
         entity_type="user",
         entity_id=user.id,
         actor_user_id=user.id,
