@@ -5,10 +5,23 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from app.core.config import settings
 from app.core.logging import TraceIdMiddleware, configure_logging, get_logger
+from app.core.ratelimit import limiter
+from app.core.redis import close_redis
 from app.modules.system.router import router as system_router
+
+
+async def _rate_limit_handler(request, exc: RateLimitExceeded):
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "rate limit exceeded", "limit": str(exc.detail)},
+    )
 
 
 @asynccontextmanager
@@ -17,6 +30,7 @@ async def lifespan(app: FastAPI):
     log = get_logger()
     log.info("api.startup", env=settings.app_env, version=app.version)
     yield
+    await close_redis()
     log.info("api.shutdown")
 
 
@@ -29,6 +43,10 @@ def create_app() -> FastAPI:
         docs_url=f"{settings.api_v1_prefix}/docs",
         openapi_url=f"{settings.api_v1_prefix}/openapi.json",
     )
+
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
+    app.add_middleware(SlowAPIMiddleware)
 
     # Order matters: trace-id outermost so every other middleware/log carries it.
     app.add_middleware(TraceIdMiddleware)

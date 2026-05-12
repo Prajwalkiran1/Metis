@@ -1,11 +1,12 @@
 """System endpoints — liveness and readiness.
 
-`/health` returns 200 as long as the process is up. Useful for Render free-tier
-keepalive pings and uptime monitoring.
+`/health` returns 200 as long as the process is up. Useful for Render
+free-tier keepalive pings and uptime monitoring.
 
-`/ready` checks downstream dependencies (DB, Redis) and returns each one's
-status. Will start exercising real DB/Redis pings once those layers land in
-later commits — for now it just reports the app is ready to serve.
+`/ready` pings the database (`SELECT 1`) and Redis (`PING`) and reports
+each check's status individually. Overall status is `down` if any
+required check fails; an orchestrator can use that to keep the pod out
+of the load balancer until dependencies are reachable.
 """
 from __future__ import annotations
 
@@ -14,10 +15,15 @@ from typing import Literal
 
 from fastapi import APIRouter
 from pydantic import BaseModel
+from sqlalchemy import text
 
 from app.core.config import settings
+from app.core.db import SessionDep
+from app.core.logging import get_logger
+from app.core.redis import RedisDep
 
 router = APIRouter(tags=["system"])
+log = get_logger(__name__)
 
 
 class HealthResponse(BaseModel):
@@ -48,14 +54,37 @@ async def health() -> HealthResponse:
     )
 
 
+async def _check_db(session: SessionDep) -> ReadinessCheck:
+    try:
+        await session.execute(text("SELECT 1"))
+        return ReadinessCheck(status="ok")
+    except Exception as exc:  # noqa: BLE001 — readiness must never raise
+        log.warning("ready.db_check_failed", error=str(exc))
+        return ReadinessCheck(status="down", detail=str(exc)[:200])
+
+
+async def _check_redis(redis: RedisDep) -> ReadinessCheck:
+    try:
+        pong = await redis.ping()
+        if pong:
+            return ReadinessCheck(status="ok")
+        return ReadinessCheck(status="down", detail="ping returned falsey")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("ready.redis_check_failed", error=str(exc))
+        return ReadinessCheck(status="down", detail=str(exc)[:200])
+
+
 @router.get("/ready", response_model=ReadinessResponse, summary="Readiness probe")
-async def ready() -> ReadinessResponse:
-    # Real DB and Redis pings are wired in a later commit when those modules exist.
+async def ready(session: SessionDep, redis: RedisDep) -> ReadinessResponse:
     checks = {
-        "app": ReadinessCheck(status="ok"),
+        "db": await _check_db(session),
+        "redis": await _check_redis(redis),
     }
+    overall: Literal["ok", "degraded", "down"] = (
+        "ok" if all(c.status == "ok" for c in checks.values()) else "down"
+    )
     return ReadinessResponse(
-        status="ok",
+        status=overall,
         checks=checks,
         timestamp=datetime.now(timezone.utc),
     )
