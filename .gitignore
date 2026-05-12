@@ -248,5 +248,12 @@ Thumbs.db
 .claude/
 CLAUDE_HEADER.md
 
+# Personal study guide (per-developer notes — not part of the repo)
+LEARN.md
+
+# The Python boilerplate `lib/` ignore above also eats apps/web/lib/. Negate it.
+!apps/web/lib/
+!apps/web/lib/**
+
 # uv cache (if a future .envrc sets UV_CACHE_DIR locally)
 .uv-cache/
