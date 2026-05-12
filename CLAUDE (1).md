@@ -680,22 +680,68 @@ docs(adr): ADR-004 — Qdrant over Chroma for vector storage
 > This block is updated by Claude at the end of every session. Paste it back into this file.
 
 ```yaml
-last_updated: "Session not yet started"
-active_module: null
+last_updated: "2026-05-12"
+active_module: M2_academic_service
 module_states:
 
   M1_user_service:
-    status: not_started
-    skeleton_live: false
-    db_tables_created: []
-    endpoints_implemented: []
+    status: complete
+    skeleton_live: true
+    db_tables_created:
+      - colleges
+      - users
+      - roles
+      - permissions
+      - role_permissions
+      - auth_sessions
+      - user_invites
+      - password_reset_tokens
+      - consents
+      - audit_logs
+      - login_attempts
+    endpoints_implemented:
+      - GET    /api/v1/health
+      - GET    /api/v1/ready
+      - POST   /api/v1/auth/login
+      - POST   /api/v1/auth/refresh
+      - POST   /api/v1/auth/logout
+      - POST   /api/v1/auth/reset-password/request
+      - POST   /api/v1/auth/reset-password/confirm
+      - POST   /api/v1/users
+      - GET    /api/v1/users/me
+      - GET    /api/v1/users/{user_id}
+      - PATCH  /api/v1/users/{user_id}
+      - PATCH  /api/v1/users/{user_id}/role
+      - POST   /api/v1/users/{user_id}/face-enroll
+      - POST   /api/v1/invites
+      - POST   /api/v1/invites/accept
     endpoints_stubbed: []
-    events_wired: []
-    ui_screens_completed: []
-    ui_screens_skipped: []        # list items with reason e.g. "face-enrollment: needs M8"
-    known_issues: []
-    next_session_picks_up_at: "Start from scratch — build schema first"
-    files_created: []
+    events_wired: []              # user.enrolled / user.role_changed deferred until event bus exists
+    ui_screens_completed: []      # apps/web not started — backend-only M1 by agreement
+    ui_screens_skipped:
+      - "all: frontend deferred to a dedicated effort"
+    known_issues:
+      - "Refresh-token reuse detection not implemented (rotate+revoke only). TODO(M1-hardening) in auth/service.py."
+      - "FACE_ENROLLMENT_MIN_AGE not enforced. TODO(M1-hardening) in users/service.py."
+      - "Profile-photo upload accepts a URL string but no object-storage backend exists yet (lands with M6)."
+    next_session_picks_up_at: "M1 done. Pick up at M2 — academic service. See PROGRESS_M1.md for full file map."
+    files_created:
+      - services/api/app/core/redis.py
+      - services/api/app/core/security.py
+      - services/api/app/core/crypto.py
+      - services/api/app/core/ratelimit.py
+      - services/api/app/core/deps.py
+      - services/api/app/core/audit.py
+      - services/api/app/core/email.py
+      - services/api/app/modules/auth/{__init__,schemas,service,router}.py
+      - services/api/app/modules/users/{schemas,service,router}.py
+      - services/api/app/modules/invites/{__init__,schemas,service,router}.py
+      - services/api/app/modules/consents/{__init__,service}.py
+      - services/api/tests/{__init__,conftest,test_auth}.py
+      - infra/docker/docker-compose.yml
+      - infra/scripts/{__init__,seed}.py
+      - CLEANUP.md
+      - PROGRESS_M1.md
 
   M2_academic_service:
     status: not_started

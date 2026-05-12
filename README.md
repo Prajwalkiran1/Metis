@@ -42,7 +42,7 @@ npm run dev:api
 npm run dev:web
 ```
 
-Seeded credentials (printed to the API log on first seed): `admin@bmsce.local`, `teacher@bmsce.local`, `student@bmsce.local`.
+Seeded credentials (printed to the API log on first seed): `admin@bmsce.edu.in`, `teacher@bmsce.edu.in`, `student@bmsce.edu.in`.
 
 ## Environment
 

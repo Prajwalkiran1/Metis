@@ -246,3 +246,7 @@ Thumbs.db
 
 # Claude session artifacts (user-local)
 .claude/
+CLAUDE_HEADER.md
+
+# uv cache (if a future .envrc sets UV_CACHE_DIR locally)
+.uv-cache/

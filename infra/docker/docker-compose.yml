@@ -1,0 +1,46 @@
+# Local development stack: Postgres 16 + Redis 7.
+#
+# Uses named volumes (metis_pgdata, metis_redisdata) rather than bind
+# mounts so nothing escapes Docker's managed storage. Tear down with
+#   docker compose -f infra/docker/docker-compose.yml down -v --rmi local
+# to drop volumes and pull-down local images. See CLEANUP.md.
+name: metis
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: metis_postgres
+    environment:
+      POSTGRES_USER: metis
+      POSTGRES_PASSWORD: metis
+      POSTGRES_DB: metis
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U metis -d metis"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: metis_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+    name: metis_pgdata
+  redisdata:
+    name: metis_redisdata
