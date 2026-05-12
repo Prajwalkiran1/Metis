@@ -5,10 +5,10 @@ Single Settings instance shared across the app — import via `from app.core.con
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, SecretStr, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     email_from: str = "noreply@metis.local"
 
     # ── Web ────────────────────────────────────────────────────────────────
-    cors_origins: list[str] = Field(
+    cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:3000"],
         description="Allowed origins for CORS. Comma-separated in env.",
     )
