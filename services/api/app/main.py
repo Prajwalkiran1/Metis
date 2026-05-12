@@ -13,7 +13,9 @@ from app.core.logging import TraceIdMiddleware, configure_logging, get_logger
 from app.core.ratelimit import limiter
 from app.core.redis import close_redis
 from app.modules.auth.router import router as auth_router
+from app.modules.invites.router import router as invites_router
 from app.modules.system.router import router as system_router
+from app.modules.users.router import router as users_router
 
 
 async def _rate_limit_handler(request, exc: RateLimitExceeded):
@@ -62,6 +64,8 @@ def create_app() -> FastAPI:
 
     app.include_router(system_router, prefix=settings.api_v1_prefix)
     app.include_router(auth_router, prefix=settings.api_v1_prefix)
+    app.include_router(users_router, prefix=settings.api_v1_prefix)
+    app.include_router(invites_router, prefix=settings.api_v1_prefix)
     return app
 
 
