@@ -213,8 +213,8 @@ metis/
 
 | Module | Status | Skeleton Live? | Features Done | Blocked By |
 |---|---|---|---|---|
-| M1 User Service | 🔴 Not started | No | — | — |
-| M2 Academic Service | 🔴 Not started | No | — | M1 |
+| M1 User Service | 🟢 Complete | Yes | All endpoints + auth + RBAC | — |
+| M2 Academic Service | 🟢 Complete | Yes | Backend (10 tables, all endpoints, 12 tests) + admin FE shell + /admin/academic six-tab page | — |
 | M3 Attendance Service | 🔴 Not started | No | — | M1, M2, M8 |
 | M4 Marks Service | 🔴 Not started | No | — | M1, M2 |
 | M5 Comms Service | 🔴 Not started | No | — | M1, M2 |
@@ -681,7 +681,7 @@ docs(adr): ADR-004 — Qdrant over Chroma for vector storage
 
 ```yaml
 last_updated: "2026-05-12"
-active_module: M2_academic_service
+active_module: M3_attendance_service
 module_states:
 
   M1_user_service:
@@ -744,17 +744,92 @@ module_states:
       - PROGRESS_M1.md
 
   M2_academic_service:
-    status: not_started
-    skeleton_live: false
-    db_tables_created: []
-    endpoints_implemented: []
+    status: complete
+    skeleton_live: true
+    db_tables_created:
+      - departments
+      - courses
+      - batches
+      - sections
+      - rooms
+      - course_offerings
+      - timetable_slots
+      - timetable_exceptions
+      - academic_calendar
+      - enrollments
+    endpoints_implemented:
+      - GET    /api/v1/departments
+      - POST   /api/v1/departments
+      - GET    /api/v1/departments/{id}
+      - PATCH  /api/v1/departments/{id}
+      - DELETE /api/v1/departments/{id}
+      - GET    /api/v1/courses
+      - POST   /api/v1/courses
+      - GET    /api/v1/courses/{id}
+      - PATCH  /api/v1/courses/{id}
+      - DELETE /api/v1/courses/{id}
+      - GET    /api/v1/batches
+      - POST   /api/v1/batches
+      - GET    /api/v1/batches/{id}
+      - PATCH  /api/v1/batches/{id}
+      - DELETE /api/v1/batches/{id}
+      - GET    /api/v1/sections
+      - POST   /api/v1/sections
+      - GET    /api/v1/sections/{id}
+      - PATCH  /api/v1/sections/{id}
+      - DELETE /api/v1/sections/{id}
+      - POST   /api/v1/sections/{id}/enrollments
+      - GET    /api/v1/sections/{id}/students
+      - DELETE /api/v1/sections/{id}/enrollments/{enr_id}
+      - GET    /api/v1/rooms
+      - POST   /api/v1/rooms
+      - GET    /api/v1/rooms/{id}
+      - PATCH  /api/v1/rooms/{id}
+      - DELETE /api/v1/rooms/{id}
+      - GET    /api/v1/course-offerings
+      - POST   /api/v1/course-offerings
+      - GET    /api/v1/course-offerings/{id}
+      - PATCH  /api/v1/course-offerings/{id}
+      - DELETE /api/v1/course-offerings/{id}
+      - GET    /api/v1/timetable/{section_id}
+      - POST   /api/v1/timetable
+      - PATCH  /api/v1/timetable/{slot_id}
+      - DELETE /api/v1/timetable/{slot_id}
+      - POST   /api/v1/timetable/check-conflict
+      - POST   /api/v1/timetable/exceptions
+      - DELETE /api/v1/timetable/exceptions/{id}
+      - GET    /api/v1/academic-calendar
+      - POST   /api/v1/academic-calendar
+      - PATCH  /api/v1/academic-calendar/{id}
+      - DELETE /api/v1/academic-calendar/{id}
     endpoints_stubbed: []
-    events_wired: []
-    ui_screens_completed: []
-    ui_screens_skipped: []
-    known_issues: []
-    next_session_picks_up_at: "Depends on M1 completion"
-    files_created: []
+    events_wired: []              # timetable.updated / session.created / user.enrolled deferred until event bus exists (TODO markers in service.py)
+    ui_screens_completed:
+      - "/login"
+      - "/admin/academic — Departments tab (CRUD)"
+      - "/admin/academic — Courses tab (CRUD + curriculum filter)"
+      - "/admin/academic — Batches tab (batch + section CRUD + enroll students dialog)"
+      - "/admin/academic — Rooms tab (CRUD with lat/lon)"
+      - "/admin/academic — Timetable tab (slot CRUD with check-conflict preflight + force override; exceptions view)"
+      - "/admin/academic — Calendar tab (CRUD with date-range filter)"
+    ui_screens_skipped:
+      - "Student / teacher shells — defer to M3+ sessions per the original M1 contract."
+      - "Course-offering management UI — admins create offerings via POST /course-offerings (Swagger) or the seed. UI tab can be added later."
+    known_issues:
+      - "Course-offering create UI not in /admin/academic. Workaround: use Swagger / curl. Will land with M4 marks (which also needs an offering picker)."
+      - "Conflict-override actions are audit-logged but the audit-log viewer is M9's deliverable."
+      - "Class-session materialiser (cron expanding timetable_slots into class_sessions) is M3's responsibility per the handoff note in PROGRESS_M2.md."
+    next_session_picks_up_at: "M2 done. Pick up at M3 — attendance service. See PROGRESS_M2.md for the handoff note on class_sessions materialisation."
+    files_created:
+      - services/api/app/modules/academic/{__init__,models,schemas,service,router}.py
+      - services/api/alembic/versions/0003_academic_schema.py
+      - services/api/tests/test_academic.py
+      - apps/web/{package.json,tsconfig.json,next.config.mjs,tailwind.config.ts,postcss.config.js,next-env.d.ts,.env.example,.gitignore}
+      - apps/web/app/{layout.tsx,page.tsx,globals.css,login/page.tsx,admin/layout.tsx,admin/page.tsx}
+      - apps/web/app/admin/academic/{page.tsx,_tabs/departments.tsx,_tabs/courses.tsx,_tabs/batches.tsx,_tabs/rooms.tsx,_tabs/timetable.tsx,_tabs/calendar.tsx}
+      - apps/web/lib/{api.ts,auth.ts}
+      - apps/web/components/ui.tsx
+      - PROGRESS_M2.md
 
   M3_attendance_service:
     status: not_started
@@ -871,13 +946,13 @@ module_states:
     files_created: []
 
 frontend:
-  next_app_initialized: false
-  tailwind_configured: false
-  auth_pages: false
+  next_app_initialized: true        # bootstrapped in M2 (Next.js 14 App Router)
+  tailwind_configured: true
+  auth_pages: true                  # /login
   student_shell: false
   teacher_shell: false
-  admin_shell: false
-  route_guards: false
+  admin_shell: true                 # /admin/* with sidebar + auth guard
+  route_guards: true                # client-side: redirect to /login if no token, redirect non-admin too
 
 infrastructure:
   supabase_project_created: false

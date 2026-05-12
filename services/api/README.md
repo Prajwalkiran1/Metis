@@ -17,7 +17,7 @@ uv run uvicorn app.main:app --reload --port 8000
 
 Visit http://localhost:8000/api/v1/docs for OpenAPI.
 
-## Module map (M1)
+## Module map (M1 + M2)
 
 ```
 app/
@@ -28,5 +28,7 @@ app/
     ├── auth/            # /auth/*  (login, refresh, logout, password reset)
     ├── users/           # /users/* (CRUD, role/status, profile photo, face enroll)
     ├── invites/         # /invites/* (create, accept)
-    └── consents/        # internal helpers + consent records
+    ├── consents/        # internal helpers + consent records
+    └── academic/        # /departments, /courses, /batches, /sections, /rooms,
+                         # /course-offerings, /timetable, /academic-calendar
 ```

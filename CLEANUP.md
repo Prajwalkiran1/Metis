@@ -40,7 +40,8 @@ rm -rf ~/code/personal/Metis
 This removes:
 - `services/api/.venv/` — the project-local Python venv created by `uv`
 - `services/api/.env` — your local secrets
-- `apps/web/node_modules/` — once the frontend is added
+- `apps/web/node_modules/` — Next.js dependencies (added in M2)
+- `apps/web/.next/` — Next.js build cache (added in M2)
 - every source file and migration
 
 ## 3. Optional — remove uv
@@ -73,6 +74,13 @@ stays the single deletion checklist:
 
 - [ ] M1 — Postgres tables, Redis keys, OTP emails (logged to console
       in dev — gone with the stack tear-down). No external services.
+- [ ] M2 — Adds 10 Postgres tables (departments, courses, batches,
+      sections, rooms, course_offerings, timetable_slots,
+      timetable_exceptions, academic_calendar, enrollments) + 4 enum
+      types. All inside the shared `metis_pgdata` volume — torn down by
+      step 1. Adds `apps/web/` bootstrap: Next.js, Tailwind, shadcn-style
+      primitives — `node_modules/` and `.next/` are removed by step 2.
+      No new external services.
 - [ ] M5 (Comms) — will introduce a real email provider (Resend); add
       "remove sender domain / API key" step when M5 lands.
 - [ ] M6 (Content) — object-storage bucket; add bucket-delete step.
