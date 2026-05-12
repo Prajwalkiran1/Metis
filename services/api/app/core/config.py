@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     consent_text_version: str = "v1-2026-05"
     face_enrollment_min_age: int = 18
 
+    # ── Academic / time ────────────────────────────────────────────────────
+    # College-local timezone for materialising recurring timetable slots into
+    # concrete TIMESTAMPTZ class sessions. Hardcoded until multi-region pilots.
+    default_timezone: str = "Asia/Kolkata"
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_cors(cls, v: object) -> object:
