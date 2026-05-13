@@ -40,6 +40,7 @@ class UserRole(str, enum.Enum):
     student = "student"
     teacher = "teacher"
     admin = "admin"
+    parent = "parent"
 
 
 class UserStatus(str, enum.Enum):

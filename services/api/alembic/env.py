@@ -16,6 +16,7 @@ from app.core.db import Base
 from app.modules.users import models as _users_models  # noqa: F401
 from app.modules.academic import models as _academic_models  # noqa: F401
 from app.modules.attendance import models as _attendance_models  # noqa: F401
+from app.modules.marks import models as _marks_models  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:
