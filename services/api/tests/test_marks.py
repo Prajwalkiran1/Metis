@@ -724,6 +724,31 @@ async def test_duplicate_assessment_name_409(client):
 
 
 @pytest.mark.asyncio
+async def test_assessment_roster_with_marks(client):
+    s = await _build_marks_setup(client, extra_students=2)
+    a = await _make_assessment(client, s.admin_headers, s.offering_id, max_marks=30)
+    # Enter a mark for one of the students.
+    await client.put(
+        f"/marks/{a['id']}/{s.extra_student_ids[0]}",
+        headers=s.teacher_headers,
+        json={"marks_obtained": "24", "is_absent": False},
+    )
+    r = await client.get(
+        f"/assessments/{a['id']}/roster", headers=s.teacher_headers
+    )
+    assert r.status_code == 200, r.text
+    rows = r.json()
+    # 3 enrolled total (seeded + 2 extras).
+    assert len(rows) == 3
+    by_uid = {row["student_user_id"]: row for row in rows}
+    # The marked student has marks_obtained=24.
+    assert by_uid[s.extra_student_ids[0]]["marks_obtained"] is not None
+    assert float(by_uid[s.extra_student_ids[0]]["marks_obtained"]) == 24
+    # The other students have no mark yet.
+    assert by_uid[s.seeded_student_id]["mark_id"] is None
+
+
+@pytest.mark.asyncio
 async def test_absent_mark_excludes_from_stats(client):
     s = await _build_marks_setup(client, extra_students=2)
     a = await _make_assessment(client, s.admin_headers, s.offering_id, max_marks=30)

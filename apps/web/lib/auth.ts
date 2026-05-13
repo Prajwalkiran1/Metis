@@ -3,7 +3,7 @@
 const ACCESS_KEY = "metis.access";
 const ROLE_KEY = "metis.role";
 
-export type Role = "admin" | "teacher" | "student";
+export type Role = "admin" | "teacher" | "student" | "parent";
 
 export function getAccessToken(): string | null {
   if (typeof window === "undefined") return null;

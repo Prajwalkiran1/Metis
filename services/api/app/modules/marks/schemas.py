@@ -184,6 +184,16 @@ class StudentSummary(BaseModel):
     usn: str | None = None
 
 
+class AssessmentRosterRow(BaseModel):
+    student_user_id: UUID
+    name: str
+    usn: str | None = None
+    mark_id: UUID | None = None
+    marks_obtained: Decimal | None = None
+    is_absent: bool = False
+    state: MarkState | None = None
+
+
 class ParentChildView(BaseModel):
     student: StudentSummary
     relationship: GuardianRelationship

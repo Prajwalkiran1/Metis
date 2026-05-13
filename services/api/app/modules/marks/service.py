@@ -48,6 +48,7 @@ from app.modules.marks.models import (
 from app.modules.marks.schemas import (
     AssessmentCreate,
     AssessmentPatch,
+    AssessmentRosterRow,
     AssessmentStats,
     AssessmentSummary,
     BulkError,
@@ -934,6 +935,59 @@ async def get_assessment_stats(
         max_marks=float(a.max_marks),
         locked=a.state == AssessmentState.locked,
     )
+
+
+# ── Roster (for teacher entry page) ─────────────────────────────────────────
+async def get_assessment_roster(
+    session: AsyncSession, *, actor: User, assessment_id: UUID
+) -> list[AssessmentRosterRow]:
+    _require_teacher_or_admin(actor)
+    a = await _get_active_assessment(
+        session, assessment_id=assessment_id, college_id=actor.college_id
+    )
+    if a is None:
+        raise MarksError("not_found", "assessment not found", 404)
+    offering = await _get_offering(session, a.course_offering_id, actor.college_id)
+    assert offering is not None
+    await _verify_offering_access(session, actor=actor, offering=offering)
+
+    rows = (
+        await session.execute(
+            select(
+                User.id, User.name, User.usn,
+                Mark.id, Mark.marks_obtained, Mark.is_absent, Mark.state,
+            )
+            .select_from(Enrollment)
+            .join(User, User.id == Enrollment.student_user_id)
+            .outerjoin(
+                Mark,
+                and_(
+                    Mark.assessment_id == a.id,
+                    Mark.student_user_id == Enrollment.student_user_id,
+                ),
+            )
+            .where(
+                Enrollment.section_id == offering.section_id,
+                Enrollment.academic_term == offering.academic_term,
+                Enrollment.withdrawn_at.is_(None),
+                Enrollment.college_id == actor.college_id,
+                User.deleted_at.is_(None),
+            )
+            .order_by(User.usn.nullslast(), User.name)
+        )
+    ).all()
+    return [
+        AssessmentRosterRow(
+            student_user_id=uid,
+            name=name,
+            usn=usn,
+            mark_id=mid,
+            marks_obtained=mo,
+            is_absent=ia if ia is not None else False,
+            state=st,
+        )
+        for uid, name, usn, mid, mo, ia, st in rows
+    ]
 
 
 # ── Student history ─────────────────────────────────────────────────────────

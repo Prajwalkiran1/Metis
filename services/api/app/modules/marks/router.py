@@ -30,6 +30,7 @@ from app.modules.marks.schemas import (
     AssessmentLockRequest,
     AssessmentOut,
     AssessmentPatch,
+    AssessmentRosterRow,
     AssessmentStats,
     GradeRuleSet,
     GuardianLinkCreate,
@@ -156,6 +157,23 @@ async def lock_assessment(
     except service.MarksError as e:
         raise _to_http(e) from e
     return AssessmentOut.model_validate(a)
+
+
+@router.get(
+    "/assessments/{assessment_id}/roster",
+    response_model=list[AssessmentRosterRow],
+)
+async def assessment_roster(
+    assessment_id: UUID,
+    session: SessionDep,
+    actor: User = Depends(require_teacher_or_admin),
+) -> list[AssessmentRosterRow]:
+    try:
+        return await service.get_assessment_roster(
+            session, actor=actor, assessment_id=assessment_id
+        )
+    except service.MarksError as e:
+        raise _to_http(e) from e
 
 
 @router.get("/assessments/{assessment_id}/stats", response_model=AssessmentStats)

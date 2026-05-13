@@ -50,7 +50,9 @@ export async function api<T = unknown>(path: string, opts: Options = {}): Promis
   const { method = "GET", body, query, noAuth = false } = opts;
   const url = buildUrl(path, query);
   const headers: Record<string, string> = {};
-  if (body !== undefined) headers["Content-Type"] = "application/json";
+  const isFormData = typeof FormData !== "undefined" && body instanceof FormData;
+  // FormData sets its own multipart boundary; forcing JSON would break it.
+  if (body !== undefined && !isFormData) headers["Content-Type"] = "application/json";
 
   const token = noAuth ? null : getAccessToken();
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -59,7 +61,12 @@ export async function api<T = unknown>(path: string, opts: Options = {}): Promis
     method,
     headers,
     credentials: "include",
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body:
+      body === undefined
+        ? undefined
+        : isFormData
+          ? (body as FormData)
+          : JSON.stringify(body),
   };
 
   let resp = await fetch(url, init);

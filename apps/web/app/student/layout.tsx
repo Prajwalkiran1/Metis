@@ -10,8 +10,8 @@ import { logout } from "@/lib/api";
 
 const NAV = [
   { href: "/student/attendance", label: "Attendance" },
+  { href: "/student/marks", label: "Marks" },
   // Stubs for future student-side modules.
-  { href: "/student/marks", label: "Marks", disabled: true },
   { href: "/student/materials", label: "Materials", disabled: true },
 ];
 

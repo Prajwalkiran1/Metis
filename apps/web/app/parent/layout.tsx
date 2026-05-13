@@ -8,14 +8,9 @@ import clsx from "clsx";
 import { getAccessToken, getRole } from "@/lib/auth";
 import { logout } from "@/lib/api";
 
-const NAV = [
-  { href: "/teacher/attendance", label: "Attendance" },
-  { href: "/teacher/marks", label: "Marks" },
-  // Stubs for future teacher-side modules.
-  { href: "/teacher/materials", label: "Materials", disabled: true },
-];
+const NAV = [{ href: "/parent/marks", label: "Marks" }];
 
-export default function TeacherLayout({ children }: { children: ReactNode }) {
+export default function ParentLayout({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const [ready, setReady] = useState(false);
@@ -26,8 +21,7 @@ export default function TeacherLayout({ children }: { children: ReactNode }) {
       router.replace("/login");
       return;
     }
-    const role = getRole();
-    if (role !== "teacher" && role !== "admin") {
+    if (getRole() !== "parent") {
       router.replace("/login");
       return;
     }
@@ -42,23 +36,19 @@ export default function TeacherLayout({ children }: { children: ReactNode }) {
     <div className="flex min-h-screen">
       <aside className="w-56 border-r border-zinc-200 bg-white p-3">
         <div className="mb-5 px-2 text-sm font-semibold text-zinc-900">
-          Metis · teacher
+          Metis · parent
         </div>
         <nav className="space-y-1">
           {NAV.map((n) => (
             <Link
               key={n.href}
-              href={n.disabled ? "#" : n.href}
-              aria-disabled={n.disabled}
+              href={n.href}
               className={clsx(
                 "block rounded px-2 py-1.5 text-sm",
-                n.disabled
-                  ? "cursor-not-allowed text-zinc-400"
-                  : pathname.startsWith(n.href)
-                    ? "bg-zinc-100 font-medium text-zinc-900"
-                    : "text-zinc-700 hover:bg-zinc-100",
+                pathname.startsWith(n.href)
+                  ? "bg-zinc-100 font-medium text-zinc-900"
+                  : "text-zinc-700 hover:bg-zinc-100",
               )}
-              onClick={(e) => n.disabled && e.preventDefault()}
             >
               {n.label}
             </Link>
