@@ -25,3 +25,8 @@ limiter = Limiter(
 def auth_rate_limit() -> str:
     """Return the slowapi limit string for auth endpoints."""
     return f"{settings.rate_limit_auth_per_minute}/minute"
+
+
+def attendance_submit_rate_limit() -> str:
+    """Per-IP cap on /attendance/submit — defends against bulk replay."""
+    return f"{settings.rate_limit_attendance_submit_per_minute}/minute"

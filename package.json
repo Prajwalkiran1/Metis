@@ -14,6 +14,7 @@
     "test:api": "cd services/api && uv run pytest",
     "migrate": "cd services/api && uv run alembic upgrade head",
     "seed": "uv run --project services/api python -m infra.scripts.seed",
+    "materialise": "cd services/api && uv run python -m app.cli materialise",
     "infra:up": "docker compose -f infra/docker/docker-compose.yml up -d",
     "infra:down": "docker compose -f infra/docker/docker-compose.yml down"
   },

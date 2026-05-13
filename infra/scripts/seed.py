@@ -197,7 +197,7 @@ async def _seed_academic(session: AsyncSession, *, college_id) -> None:
         await session.execute(
             select(User).where(
                 User.college_id == college_id,
-                User.email == "teacher@bmsce.edu.in",
+                User.email == "teacher@bmsce.ac.in",
                 User.deleted_at.is_(None),
             )
         )
@@ -206,7 +206,7 @@ async def _seed_academic(session: AsyncSession, *, college_id) -> None:
         await session.execute(
             select(User).where(
                 User.college_id == college_id,
-                User.email == "student@bmsce.edu.in",
+                User.email == "student@bmsce.ac.in",
                 User.deleted_at.is_(None),
             )
         )

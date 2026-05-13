@@ -12,6 +12,7 @@ import {
   login,
   loginWithGoogle,
 } from "@/lib/api";
+import type { Role } from "@/lib/auth";
 import { Button, Card, ErrorText, Field, Input } from "@/components/ui";
 
 const schema = z.object({
@@ -19,6 +20,12 @@ const schema = z.object({
   password: z.string().min(1, "required"),
 });
 type FormData = z.infer<typeof schema>;
+
+function landingFor(role: Role): string {
+  if (role === "admin") return "/admin/academic";
+  if (role === "teacher") return "/teacher/attendance";
+  return "/student/attendance";
+}
 
 declare global {
   interface Window {
@@ -91,11 +98,8 @@ export default function LoginPage() {
           setSubmitError(null);
           try {
             const role = await loginWithGoogle(response.credential);
-            if (role !== "admin") {
-              setSubmitError("only admins can use this console for now");
-              return;
-            }
-            router.replace("/admin/academic");
+            router.replace(landingFor(role));
+            return;
           } catch (e) {
             const msg =
               e instanceof ApiError
@@ -138,11 +142,7 @@ export default function LoginPage() {
     setSubmitError(null);
     try {
       const role = await login(values.email, values.password);
-      if (role !== "admin") {
-        setSubmitError("only admins can use this console for now");
-        return;
-      }
-      router.replace("/admin/academic");
+      router.replace(landingFor(role));
     } catch (e) {
       const msg =
         e instanceof ApiError ? e.message : "login failed — please retry";

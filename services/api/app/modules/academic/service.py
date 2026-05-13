@@ -9,7 +9,7 @@ Soft delete is enforced at this layer; queries always filter
 """
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import date, time, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -99,6 +99,29 @@ async def _get_active(
 def _require_admin(actor: User) -> None:
     if actor.role != UserRole.admin:
         raise AcademicError("forbidden", "admin role required", 403)
+
+
+# `timetable.updated` is still owed an event bus — see TODO(events) markers
+# below. Until then, M3 is wired in via a direct call: any mutation that
+# affects a slot or exception re-materialises the affected offering's
+# class_sessions in [today, today+14d]. The work happens in the same
+# transaction so partial state is impossible. When the bus lands, replace
+# this with `publish('timetable.updated', {offering_id: ...})`.
+_MATERIALISE_HORIZON_DAYS = 14
+
+
+async def _rematerialise_for_event(
+    session: AsyncSession, *, offering_id: UUID
+) -> None:
+    from app.modules.attendance.service import materialise_offering  # lazy
+
+    today = date.today()
+    await materialise_offering(
+        session,
+        offering_id=offering_id,
+        from_date=today,
+        to_date=today + timedelta(days=_MATERIALISE_HORIZON_DAYS),
+    )
 
 
 # ── Departments ──────────────────────────────────────────────────────────────
@@ -1175,9 +1198,9 @@ async def create_timetable_slot(
             "force_override": bool(conflicts) and force,
         },
     )
-    # TODO(events): publish timetable.updated for M3 (so it can re-materialise
-    # class_sessions if its cache exists yet) and M5 (so it can re-target
-    # announcements). Bus lands when M3 starts consuming.
+    await _rematerialise_for_event(session, offering_id=slot.course_offering_id)
+    # TODO(events): publish timetable.updated for M5 (re-target announcements).
+    # M3's materialiser is invoked directly above until the bus lands.
     await session.commit()
     await session.refresh(slot)
     return slot
@@ -1259,7 +1282,8 @@ async def patch_timetable_slot(
         old_value=_jsonify(before),
         new_value=_jsonify(after),
     )
-    # TODO(events): publish timetable.updated.
+    await _rematerialise_for_event(session, offering_id=slot.course_offering_id)
+    # TODO(events): publish timetable.updated (non-M3 consumers).
     await session.commit()
     await session.refresh(slot)
     return slot
@@ -1281,7 +1305,13 @@ async def delete_timetable_slot(
         actor_user_id=actor.id,
         college_id=actor.college_id,
     )
-    # TODO(events): publish timetable.updated.
+    # Existing class_sessions for this slot aren't deleted — admins manage
+    # historical sessions explicitly. Re-materialise so future dates that
+    # had been derived from this slot stop appearing (the candidate set
+    # will no longer include them, but UPSERT-only never deletes; this is
+    # documented behavior). New future dates will simply not be created.
+    await _rematerialise_for_event(session, offering_id=slot.course_offering_id)
+    # TODO(events): publish timetable.updated (non-M3 consumers).
     await session.commit()
 
 
@@ -1438,7 +1468,8 @@ async def create_timetable_exception(
             "offering_id": str(exc.course_offering_id),
         },
     )
-    # TODO(events): publish timetable.updated; M3 must idempotently reconcile.
+    await _rematerialise_for_event(session, offering_id=exc.course_offering_id)
+    # TODO(events): publish timetable.updated (non-M3 consumers).
     await session.commit()
     await session.refresh(exc)
     return exc
@@ -1457,6 +1488,7 @@ async def delete_timetable_exception(
     exc = row.scalar_one_or_none()
     if exc is None:
         raise AcademicError("not_found", "exception not found", 404)
+    offering_id = exc.course_offering_id
     await session.delete(exc)
     await write_audit(
         session,
@@ -1466,7 +1498,8 @@ async def delete_timetable_exception(
         actor_user_id=actor.id,
         college_id=actor.college_id,
     )
-    # TODO(events): publish timetable.updated.
+    await _rematerialise_for_event(session, offering_id=offering_id)
+    # TODO(events): publish timetable.updated (non-M3 consumers).
     await session.commit()
 
 

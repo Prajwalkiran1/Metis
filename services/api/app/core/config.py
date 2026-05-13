@@ -55,6 +55,19 @@ class Settings(BaseSettings):
     login_lockout_window_seconds: int = 60 * 15  # 15 min
     rate_limit_auth_per_minute: int = 5
 
+    # ── Attendance (M3) ────────────────────────────────────────────────────
+    # QR JWT lifetime — the teacher's FE polls within this window to rotate.
+    attendance_qr_ttl_seconds: int = 90
+    # GPS threshold used when the room has no lat/lon (online classes, TBD
+    # rooms). When the room has coords, `rooms.gps_radius_m` wins.
+    attendance_gps_default_radius_m: int = 100
+    # M8 ships real face verification (DeepFace FaceNet). Until then the
+    # stub returns this confidence so the state machine resolves to
+    # verified. Lower this to test the FLAGGED path.
+    attendance_face_stub_confidence: float = 0.95
+    # slowapi per-IP cap on /attendance/submit.
+    rate_limit_attendance_submit_per_minute: int = 10
+
     # ── Face data encryption (M1: stub stores placeholder; M8 plugs in encoding) ──
     face_encryption_key: SecretStr = Field(
         default=SecretStr("0" * 64),  # 32-byte key in hex; replace per-env

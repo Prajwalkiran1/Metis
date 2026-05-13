@@ -81,6 +81,17 @@ stays the single deletion checklist:
       step 1. Adds `apps/web/` bootstrap: Next.js, Tailwind, shadcn-style
       primitives — `node_modules/` and `.next/` are removed by step 2.
       No new external services.
+- [ ] M3 — Adds 5 Postgres tables (class_sessions, qr_tokens,
+      attendance_records, device_logs, attendance_overrides) + 3 enum
+      types (class_session_state, class_session_source,
+      attendance_record_state) inside the shared `metis_pgdata` volume —
+      torn down by step 1. Adds one frontend dependency
+      (`qrcode.react@4.1.0`) which lives in `apps/web/node_modules/`
+      and is removed by step 2. The student device fingerprint is
+      stored in browser localStorage under key `metis.device_fp` —
+      cleared automatically by `Application → Storage → Clear site
+      data` in dev tools, or by clearing browser data for
+      `localhost:3000`. No new external services.
 - [ ] M5 (Comms) — will introduce a real email provider (Resend); add
       "remove sender domain / API key" step when M5 lands.
 - [ ] M6 (Content) — object-storage bucket; add bucket-delete step.

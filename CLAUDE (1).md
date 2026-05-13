@@ -215,7 +215,7 @@ metis/
 |---|---|---|---|---|
 | M1 User Service | 🟢 Complete | Yes | All endpoints + auth + RBAC | — |
 | M2 Academic Service | 🟢 Complete | Yes | Backend (10 tables, all endpoints, 12 tests) + admin FE shell + /admin/academic six-tab page | — |
-| M3 Attendance Service | 🔴 Not started | No | — | M1, M2, M8 |
+| M3 Attendance Service | 🟢 Complete | Yes | Backend (5 tables, 7 endpoints, 15 tests, idempotent materialiser, signed-JWT QR, GPS+face anti-proxy, state machine, narrow overrides, CSV report) + teacher FE (rotating QR, live feed, override actions) + student FE (paste QR, GPS submit) | — |
 | M4 Marks Service | 🔴 Not started | No | — | M1, M2 |
 | M5 Comms Service | 🔴 Not started | No | — | M1, M2 |
 | M6 Content Service | 🔴 Not started | No | — | M1, M2, M7 |
@@ -680,8 +680,8 @@ docs(adr): ADR-004 — Qdrant over Chroma for vector storage
 > This block is updated by Claude at the end of every session. Paste it back into this file.
 
 ```yaml
-last_updated: "2026-05-12"
-active_module: M3_attendance_service
+last_updated: "2026-05-13"
+active_module: M4_marks_service
 module_states:
 
   M1_user_service:
@@ -842,22 +842,57 @@ module_states:
       - PROGRESS_M2.md
 
   M3_attendance_service:
-    status: not_started
-    skeleton_live: false
-    db_tables_created: []
-    endpoints_implemented: []
+    status: complete
+    skeleton_live: true
+    db_tables_created:
+      - class_sessions
+      - qr_tokens
+      - attendance_records
+      - device_logs
+      - attendance_overrides
+    endpoints_implemented:
+      - GET    /api/v1/sessions
+      - POST   /api/v1/sessions/{id}/qr
+      - POST   /api/v1/sessions/{id}/close
+      - POST   /api/v1/attendance/submit
+      - GET    /api/v1/attendance/session/{id}
+      - GET    /api/v1/attendance/{student_id}
+      - PATCH  /api/v1/attendance/sessions/{id}/override
+      - GET    /api/v1/attendance/report/{batch_id}
     endpoints_stubbed: []
-    state_machine_implemented: false
-    qr_generation: false
-    gps_verification: false
-    face_verify_integration: false
-    anti_replay: false
-    events_wired: []
-    ui_screens_completed: []
-    ui_screens_skipped: []
-    known_issues: []
-    next_session_picks_up_at: "Depends on M1, M2 completion"
-    files_created: []
+    state_machine_implemented: true     # class_session_state + attendance_record_state with service-layer validation
+    qr_generation: true                  # signed JWT typ=attendance_qr, 90s exp, jti persisted in qr_tokens
+    gps_verification: true               # haversine; flagged (not rejected) when > room.gps_radius_m
+    face_verify_integration: stub        # face_stub.py returns 0.95; M8 ships DeepFace
+    anti_replay: true                    # (session, student) unique + (session, device_fp) unique
+    events_wired:
+      - "M2 → M3: timetable_slot/exception mutations call materialise_offering inline (replaces 5 TODO(events) markers)"
+      # publish-side TODO(events) markers retained: session.created, attendance.marked, attendance.anomaly_detected, session.closed
+    ui_screens_completed:
+      - "/teacher (shell + auth guard, role=teacher|admin)"
+      - "/teacher/attendance — today's sessions, rotating QR (QRCodeSVG), 5s live feed, per-row override actions, close-session"
+      - "/student (shell + auth guard, role=student)"
+      - "/student/attendance — paste-QR, browser geolocation, opaque device fingerprint, submit + result badge"
+      - "/login — routes by role (admin→/admin/academic, teacher→/teacher/attendance, student→/student/attendance)"
+    ui_screens_skipped:
+      - "QR camera scanner on student page — paste fallback only; ~1-day follow-up to add e.g. @yudiel/react-qr-scanner"
+      - "Admin attendance views — /admin sidebar already has Reports/System stubs; M9 wires the admin slice"
+    known_issues:
+      - "Materialiser is UPSERT-only by design — deleting a slot does not soft-delete future class_sessions for it. Admin manages historical sessions explicitly. M9 bulk-action UI later."
+      - "Real face verification is the M8 stub; FLAGGED path can be exercised by setting ATTENDANCE_FACE_STUB_CONFIDENCE<0.6."
+      - "Publish-side event bus still owed: session.created / attendance.marked / attendance.anomaly_detected / session.closed remain TODO(events) markers. Consume-side (M2→M3) is wired via direct calls."
+      - "Seed bug fix: _seed_academic was matching teacher/student by @bmsce.edu.in (wrong TLD) and silently returning early. Fixed to @bmsce.ac.in so the academic seed now actually runs."
+    next_session_picks_up_at: "M3 done. Pick up at M4 — marks service. M4 reads from M2's course_offerings (the FK target M3 has been validating end-to-end)."
+    files_created:
+      - services/api/app/modules/attendance/{__init__,models,schemas,service,router,qr,geo,face_stub}.py
+      - services/api/app/cli.py
+      - services/api/alembic/versions/0005_attendance_schema.py
+      - services/api/tests/test_attendance.py
+      - apps/web/app/teacher/{layout,page}.tsx
+      - apps/web/app/teacher/attendance/page.tsx
+      - apps/web/app/student/{layout,page}.tsx
+      - apps/web/app/student/attendance/page.tsx
+      - PROGRESS_M3.md
 
   M4_marks_service:
     status: not_started
