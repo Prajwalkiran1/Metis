@@ -102,6 +102,21 @@ class Settings(BaseSettings):
     # concrete TIMESTAMPTZ class sessions. Hardcoded until multi-region pilots.
     default_timezone: str = "Asia/Kolkata"
 
+    # ── AI deferral (M7 / M8) ──────────────────────────────────────────────
+    # Both engines ship as scaffolds (services/learning-engine/,
+    # services/insights-engine/) and remain disabled until their owning
+    # session lands. Core academic flows never call these URLs while the
+    # flags are False — every call site short-circuits to a stub response.
+    ai_learning_engine_enabled: bool = False
+    ai_learning_engine_url: str = "http://localhost:9001"
+    ai_insights_engine_enabled: bool = False
+    ai_insights_engine_url: str = "http://localhost:9002"
+
+    # Face verification: stub returns settings.attendance_face_stub_confidence;
+    # 'facenet' lands in M8 and swaps the implementation.
+    face_verify_method: Literal["stub", "facenet"] = "stub"
+    face_verify_threshold: float = 0.6
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_cors(cls, v: object) -> object:

@@ -41,6 +41,7 @@ class UserRole(str, enum.Enum):
     teacher = "teacher"
     admin = "admin"
     parent = "parent"
+    hod = "hod"
 
 
 class UserStatus(str, enum.Enum):
@@ -97,6 +98,11 @@ class User(Base, TimestampedMixin, SoftDeleteMixin):
     google_sub: Mapped[str | None] = mapped_column(String(80), nullable=True, unique=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     usn: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    # M2-rework: canonical HOD↔department link. Replaces the legacy
+    # departments.head_user_id pointer; backfilled in migration 0008.
+    hod_of_department_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("departments.id"), nullable=True
+    )
     dob: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     profile_photo_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 

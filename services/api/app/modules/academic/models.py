@@ -38,9 +38,12 @@ from app.core.db import Base, SoftDeleteMixin, TimestampedMixin, new_uuid
 
 # ── Enums ────────────────────────────────────────────────────────────────────
 class CourseType(str, enum.Enum):
-    core = "core"
-    elective = "elective"
+    # M2 rework: BMSCE-aligned values. Old core/elective rows are remapped
+    # to 'theory' in migration 0007.
+    theory = "theory"
     lab = "lab"
+    integrated = "integrated"
+    nptel = "nptel"
 
 
 class RoomType(str, enum.Enum):
@@ -108,7 +111,7 @@ class Course(Base, TimestampedMixin, SoftDeleteMixin):
     course_type: Mapped[CourseType] = mapped_column(
         Enum(CourseType, name="course_type", native_enum=True),
         nullable=False,
-        default=CourseType.core,
+        default=CourseType.theory,
     )
 
     __table_args__ = (

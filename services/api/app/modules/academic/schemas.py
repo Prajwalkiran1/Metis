@@ -74,7 +74,7 @@ class CourseCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     credits: int = Field(ge=0, le=12, default=3)
     semester: int = Field(ge=1, le=12)
-    course_type: CourseType = CourseType.core
+    course_type: CourseType = CourseType.theory
 
 
 class CoursePatch(BaseModel):

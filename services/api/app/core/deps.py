@@ -81,6 +81,30 @@ def require_role(*allowed: UserRole):
 
 require_admin = require_role(UserRole.admin)
 require_teacher_or_admin = require_role(UserRole.teacher, UserRole.admin)
+require_hod = require_role(UserRole.hod)
+require_hod_or_admin = require_role(UserRole.hod, UserRole.admin)
+# HOD scope includes teaching their own offerings, so any teacher-permitted
+# endpoint should accept HOD too.
+require_teacher_hod_or_admin = require_role(
+    UserRole.teacher, UserRole.hod, UserRole.admin
+)
+
+
+def require_dept_scope(user: User, department_id: UUID) -> None:
+    """Raise 403 unless the user can act in the given department.
+
+    Admins pass unconditionally. HODs pass only for their own department.
+    Anyone else is rejected; teacher-level dept scope (e.g., own offerings)
+    is computed against course_offerings.teacher_user_id, not this helper.
+    """
+    if user.role == UserRole.admin:
+        return
+    if user.role == UserRole.hod and user.hod_of_department_id == department_id:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="insufficient permissions for this department",
+    )
 
 
 # ── Request metadata helpers ──────────────────────────────────────────────────
