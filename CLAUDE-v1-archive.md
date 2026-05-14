@@ -216,7 +216,7 @@ metis/
 | M1 User Service | 🟢 Complete | Yes | All endpoints + auth + RBAC | — |
 | M2 Academic Service | 🟢 Complete | Yes | Backend (10 tables, all endpoints, 12 tests) + admin FE shell + /admin/academic six-tab page | — |
 | M3 Attendance Service | 🟢 Complete | Yes | Backend (5 tables, 7 endpoints, 15 tests, idempotent materialiser, signed-JWT QR, GPS+face anti-proxy, state machine, narrow overrides, CSV report) + teacher FE (rotating QR, live feed, override actions) + student FE (paste QR, GPS submit) | — |
-| M4 Marks Service | 🟢 Complete | Yes | Backend (5 tables, 17 endpoints, 22 tests, assessment CRUD + lock cascade, single + best-effort CSV bulk, per-mark audit timeline, per-offering grade rules, parent role via guardian_links) + teacher FE (entry + CSV + live stats + lock + history + edit-log) + student FE (table + radar + trend + projection + PDF) + parent FE (`/parent/marks` read-only) | — |
+| M4 Marks Service | 🔴 Not started | No | — | M1, M2 |
 | M5 Comms Service | 🔴 Not started | No | — | M1, M2 |
 | M6 Content Service | 🔴 Not started | No | — | M1, M2, M7 |
 | M7 Learning Engine | 🔴 Not started | No | — | M6 |
@@ -681,7 +681,7 @@ docs(adr): ADR-004 — Qdrant over Chroma for vector storage
 
 ```yaml
 last_updated: "2026-05-13"
-active_module: M5_comms_service
+active_module: M4_marks_service
 module_states:
 
   M1_user_service:
@@ -895,62 +895,19 @@ module_states:
       - PROGRESS_M3.md
 
   M4_marks_service:
-    status: complete
-    skeleton_live: true
-    db_tables_created:
-      - assessments
-      - marks
-      - grade_rules
-      - marks_audit
-      - guardian_links
-    endpoints_implemented:
-      - POST   /api/v1/assessments
-      - GET    /api/v1/assessments
-      - GET    /api/v1/assessments/{id}
-      - PATCH  /api/v1/assessments/{id}
-      - DELETE /api/v1/assessments/{id}
-      - PATCH  /api/v1/assessments/{id}/lock
-      - GET    /api/v1/assessments/{id}/roster
-      - GET    /api/v1/assessments/{id}/stats
-      - PUT    /api/v1/marks/{assessment_id}/{student_user_id}
-      - PUT    /api/v1/marks/bulk                   # multipart CSV; dry_run + best-effort
-      - GET    /api/v1/marks/{student_user_id}/history
-      - GET    /api/v1/marks/{mark_id}/audit
-      - GET    /api/v1/grade-rules
-      - PUT    /api/v1/grade-rules
-      - GET    /api/v1/parent/children
-      - GET    /api/v1/parent/marks
-      - POST   /api/v1/admin/guardian-links
-      - DELETE /api/v1/admin/guardian-links/{id}
+    status: not_started
+    skeleton_live: false
+    db_tables_created: []
+    endpoints_implemented: []
     endpoints_stubbed: []
-    grade_engine_implemented: true                  # per-offering grade_rules + projection in /student/marks
-    csv_upload: true                                # best-effort, dry-run supported
-    role_extension: true                            # user_role enum extended with 'parent' via ALTER TYPE
-    events_wired: []                                # TODO(events) markers retained for assessment.created, mark.set, mark.bulk, assessment.lock/unlock
-    ui_screens_completed:
-      - "/teacher/marks — offering+assessment pickers, entry table (save-on-blur), live + server stats, outlier badge, CSV upload (validate→commit), lock/unlock with reason, assessments history, per-row edit-log Dialog"
-      - "/student/marks — table, percentile-vs-mean summary, recharts radar + trend, grade projection (need-SEE-for-pass/distinction), jsPDF download"
-      - "/parent (shell + auth guard, role=parent)"
-      - "/parent/marks — child picker + read-only marks table"
-      - "/login — adds parent → /parent/marks routing"
-    ui_screens_skipped:
-      - "Parent radar/trend/PDF — table-only this session; can land in a follow-up"
-      - "Exact rank (12 / 60) — approximate percentile only; true ranking needs a backend endpoint"
-      - "Admin guardian-link management UI — admins use POST /admin/guardian-links via Swagger / curl; UI is M9's deliverable"
-    known_issues:
-      - "Publish-side event bus still owed: assessment.created, mark.set, mark.bulk, assessment.lock/unlock remain TODO(events) markers in marks/service.py. M5 will likely be the trigger to build the bus."
-      - "Parent self-signup deferred — admin must POST /admin/guardian-links; response includes a one-time parent_initial_password."
-      - "Cross-row max_marks ceiling validated in service (DB CHECK is only ≤1000); deleting the assessment with marks is rejected at service layer (no FK CASCADE)."
-    next_session_picks_up_at: "M4 done. Pick up at M5 — communications service. M5 will likely be the trigger to actually build the event bus since it needs subscribe semantics."
-    files_created:
-      - services/api/app/modules/marks/{__init__,models,schemas,service,router}.py
-      - services/api/alembic/versions/0006_marks_schema.py
-      - services/api/tests/test_marks.py
-      - apps/web/app/teacher/marks/page.tsx
-      - apps/web/app/student/marks/page.tsx
-      - apps/web/app/parent/{layout,page}.tsx
-      - apps/web/app/parent/marks/page.tsx
-      - PROGRESS_M4.md
+    grade_engine_implemented: false
+    csv_upload: false
+    events_wired: []
+    ui_screens_completed: []
+    ui_screens_skipped: []
+    known_issues: []
+    next_session_picks_up_at: "Depends on M1, M2 completion"
+    files_created: []
 
   M5_comms_service:
     status: not_started
