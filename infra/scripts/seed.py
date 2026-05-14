@@ -280,9 +280,9 @@ async def _seed_academic(session: AsyncSession, *, college_id) -> None:
 
     # ── Courses (sem 3) ─────────────────────────────────────────────────────
     course_specs = [
-        ("CS301", "Data Structures", 4, CourseType.core),
-        ("CS302", "Database Management Systems", 4, CourseType.core),
-        ("CS303", "Discrete Mathematics", 3, CourseType.core),
+        ("CS301", "Data Structures", 4, CourseType.theory),
+        ("CS302", "Database Management Systems", 4, CourseType.theory),
+        ("CS303", "Discrete Mathematics", 3, CourseType.theory),
     ]
     courses: dict[str, Course] = {}
     for code, title, credits, ctype in course_specs:

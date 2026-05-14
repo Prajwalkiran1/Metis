@@ -393,8 +393,8 @@ metis/
 
 | Module | Status | Skeleton Live? | Features Done | Blocked By |
 |---|---|---|---|---|
-| M1 User Service | 🟢 Complete | Yes | All endpoints + auth + RBAC + Google OAuth + invite flow | — |
-| M2 Academic Service | 🟠 Rework pending | Yes (v1) | v1 shipped; rework adds: USN, HOD role, semester_setups, elective_groups, lab_batches, schemes, NPTEL, internal_deadlines, hall_tickets, grade_cards, tasks, re_eval, parent visibility flags | — |
+| M1 User Service | 🟢 Complete | Yes | All endpoints + auth + RBAC + Google OAuth + invite flow + (M2 rework) HOD role + bulk-CSV + /users list + /users/{id}/status | — |
+| M2 Academic Service | 🟡 Rework shipped, pending DB apply | Yes (v1 + 22 new tables in 0007–0009) | M2 rework: USN backfill, HOD role + canonical link, academic_terms, semester_setups, elective_groups, lab_batches, schemes (per-offering + 3 institutional templates), NPTEL, internal_deadlines, cie_schedule, tasks, hall_tickets, grade_cards, see_results, re_evaluations, academic_overrides, eligibility_snapshots, course_drops. **Migrations not yet applied — bring up Postgres and run `alembic upgrade head`.** | DB apply |
 | M3 Attendance Service | 🟠 Rework pending | Yes (v1) | v1 shipped; rework adds: eligibility engine, 60%/85% thresholds, deadline freeze integration | M2 rework |
 | M4 Marks Service | 🟠 Rework pending | Yes (v1) | v1 shipped; rework adds: scheme integration, NPTEL grading, SEE versioning, grade cards, re-eval, makeup | M2 rework, M10 |
 | M5 Comms Service | 🔴 Not started | No | — | M1, M2 rework, M10 event bus |
@@ -515,75 +515,62 @@ git log -1 --format='%B'         # should NOT contain "Co-Authored-By: Claude" o
 > Updated by Claude at the end of every session. Paste back into this file.
 
 ```yaml
-last_updated: "2026-05-14"
-active_module: M2_rework_starting
+last_updated: "2026-05-15"
+active_module: M2_rework_shipped_pending_db_apply
+
+# IMPORTANT for the next session: migrations 0007/0008/0009 were written
+# but NOT applied during this session (Postgres + docker were offline on
+# the dev machine). Before any further work, bring up infra/docker and
+# run `alembic upgrade head` + the SQL files under
+# services/api/alembic/verify/. Tests in tests/test_m2_rework.py will
+# only pass against a DB that has the rework migrations applied.
 
 module_states:
 
   M1_user_service:
     status: complete
     skeleton_live: true
-    db_tables_created:
-      - colleges
-      - users
-      - roles
-      - permissions
-      - role_permissions
-      - auth_sessions
-      - user_invites
-      - password_reset_tokens
-      - consents
-      - audit_logs
-      - login_attempts
-    endpoints_implemented: "see CLAUDE-v1-archive.md — preserved verbatim"
-    post_m2_auth_enhancements:
-      - "Google OAuth via GIS"
-      - "Domain-restricted invites (email_domain check)"
-      - "13 auth tests"
-    known_issues:
+    m2_rework_deltas:
+      - "UserRole enum + Postgres user_role enum: added 'hod'"
+      - "User.hod_of_department_id UUID NULL (canonical HOD↔dept link)"
+      - "departments.head_user_id still present but DEPRECATED — code reads from users.hod_of_department_id going forward"
+      - "USN length stays VARCHAR(40) from baseline; format CHECK in 0009 enforces 1BM+YY+DD+RRR"
+      - "New endpoints: GET /users (admin paginated), PATCH /users/{id}/status, POST /users/bulk-csv (dry-run + commit)"
+      - "PATCH /users/{id}/role now accepts hod_of_department_id; enforces one-HOD-per-dept at service layer"
+      - "New deps: require_hod, require_hod_or_admin, require_teacher_hod_or_admin, require_dept_scope"
+    known_issues_inherited:
       - "Refresh-token reuse detection not implemented (rotate+revoke only)"
-      - "Access token in localStorage — XSS exposure; needs hardening before HOD role ships"
+      - "Access token in localStorage — XSS exposure; needs hardening"
       - "No MFA / passkeys"
       - "FACE_ENROLLMENT_MIN_AGE not enforced"
-    pending_for_rework:
-      - "Add USN column to users (nullable, unique per college, validated by pattern)"
-      - "Add 'hod' value to user_role enum"
-      - "(NPTEL coordinator is NOT a separate role — it's a teacher with an NPTEL offering)"
-    next_session_picks_up_at: "M2 rework — includes USN backfill"
 
   M2_academic_service:
-    status: rework_pending
+    status: rework_shipped_pending_db_apply
     skeleton_live: true
     v1_shipped: "see CLAUDE-v1-archive.md — 10 tables, all endpoints, admin /admin/academic six-tab page"
-    rework_scope:
-      schema_additions:
-        - "users.usn column + backfill + validation"
-        - "user_role enum += hod"
-        - "semester_setups (state machine: draft/published/active/archived)"
-        - "elective_groups + elective_group_options"
-        - "lab_batches + lab_batch_members + lab_batch_assignments (flexible count)"
-        - "assessment_scheme_templates (admin-owned catalog + dept-specific via owner_dept_id)"
-        - "assessment_schemes (per-offering instance) + assessment_scheme_components"
-        - "internal_deadlines (institutional hard + dept soft + per-course freeze)"
-        - "course_type enum += nptel"
-        - "nptel_enrollments (student → specific NPTEL course name + certificate URL)"
-        - "tasks (invigilation, paper-setting, etc.)"
-        - "hall_tickets + hall_ticket_versions"
-        - "grade_cards + grade_card_versions"
-        - "see_results (original + re_eval + makeup versions)"
-        - "re_evaluations (request + window tracking)"
-        - "academic_overrides (typed semantic actions)"
-        - "course_drops / course_withdrawals (schema-ready, deferred UI)"
-        - "academic_terms.term_type enum (regular | fast_track) — schema-ready"
-        - "parent visibility flags on assignments, announcements, marks_publish_events"
-        - "guardian_links (extended from M4 — supports CSV bulk creation)"
-      migrations: "0007 additive, 0008 USN backfill, 0009 constraints"
-      ui_deltas:
-        - "/admin/users — USN column + filter"
-        - "/admin/academic — Course form adds 'NPTEL' option"
-        - "/hod/* — empty shell with auth guard (new role); /hod/dashboard placeholder"
+    migrations_written:
+      - "0007 additive: 22 new tables, 9 new enums, course_type enum rewritten (core/elective/lab → theory/lab/integrated/nptel), new columns on users/course_offerings/enrollments/guardian_links/marks/academic_terms"
+      - "0008 backfill: academic_terms from VARCHAR codes, USNs for students, hod_of_department_id from departments.head_user_id, semester_setups from offerings, attendance_overrides→academic_overrides, grade_rules→assessment_schemes+components row-pivot, 3 institutional scheme templates per college"
+      - "0009 constraints: USN NOT NULL/format/unique-per-college, FK course_offerings.assessment_scheme_id, AAT ≤40% CHECK, one-HOD-per-dept partial unique, deferred FKs for hall_tickets/grade_cards.current_version_id, single-current see_results"
+    verify_sql_blocks: "services/api/alembic/verify/verify_0007.sql / verify_0008.sql / verify_0009.sql"
+    plan_vs_live_corrections:
+      - "course_type enum was (core|elective|lab); rewritten in 0007 with USING expression (core→theory, elective→theory, lab→lab)"
+      - "academic_terms table created and backfilled from existing VARCHAR codes; new tables FK academic_term_id, legacy academic_term VARCHAR(20) preserved on course_offerings/enrollments"
+      - "see_results/re_evaluations/course_drops use enrollment_id BIGINT (matches enrollments.id BIGINT PK), not UUID"
+      - "0008 USN backfill joins enrollments→sections→batches→departments (the plan's enrollments.department_id does not exist)"
+      - "0008 grade_rules pivot handles rows-per-assessment-type, not the wide-row shape the original plan assumed"
+    ui_shipped:
+      - "/admin/users — full table (name/email/USN/role/dept/status) with role/status/q filters, pagination, role-change dialog with HOD dept selector, status toggle, bulk-CSV import with dry-run preview"
+      - "/admin/academic Courses tab — course_type selector now includes nptel + integrated"
+      - "/hod/* — auth-guarded shell with sidebar (M10 entries disabled); /hod/dashboard reads /api/v1/hod/dashboard and renders welcome + dept overview placeholder + own teaching offerings"
+      - "apps/web/lib/auth.ts Role union extended with 'hod'; login/page.tsx routes HODs to /hod/dashboard"
+    deprecated_for_future_cleanup:
+      - "departments.head_user_id (use users.hod_of_department_id)"
+      - "attendance_overrides table (data migrated to academic_overrides; reader removed in M3 rework)"
+      - "grade_rules table (pivoted into assessment_schemes/components; reader removed in M4 rework)"
+      - "course_offerings.academic_term VARCHAR(20) (use academic_term_id)"
     blocked_by: none
-    next_session_picks_up_at: "M2 rework first; then M10a"
+    next_session_picks_up_at: "Apply migrations + verify, then M10a (Semester Setup + HOD Approval)"
 
   M3_attendance_service:
     status: rework_pending
@@ -681,7 +668,8 @@ frontend:
   teacher_shell: true
   student_shell: true
   parent_shell: true
-  hod_shell: false   # ships in M2 rework
+  hod_shell: true   # shipped in M2 rework (placeholder dashboard only)
+  admin_users_page: true   # shipped in M2 rework
 
 infrastructure:
   supabase_project_created: false
