@@ -1,0 +1,18 @@
+[project]
+name = "metis-learning-engine"
+version = "0.0.1"
+description = "Metis M7 — Learning Engine (RAG tutor + knowledge graph). Scaffold only."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.32.0",
+  # Real M7 deps land in M7a/M7b: qdrant-client, sentence-transformers,
+  # pypdf, python-pptx, mammoth, networkx, structlog, redis. Kept out of
+  # the scaffold to keep `pip install` instant.
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3.0"]
+
+[tool.uv]
+package = false

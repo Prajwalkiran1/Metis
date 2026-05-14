@@ -1,0 +1,18 @@
+[project]
+name = "metis-insights-engine"
+version = "0.0.1"
+description = "Metis M8 — Insights + Face Verification. Scaffold only."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.32.0",
+  # Real M8 deps land in M8a/M8b: deepface, opencv-python, numpy,
+  # scikit-learn, redis. Kept out of the scaffold to keep `pip install`
+  # instant.
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3.0"]
+
+[tool.uv]
+package = false
