@@ -23,6 +23,7 @@ type FormData = z.infer<typeof schema>;
 
 function landingFor(role: Role): string {
   if (role === "admin") return "/admin/academic";
+  if (role === "hod") return "/hod/dashboard";
   if (role === "teacher") return "/teacher/attendance";
   if (role === "parent") return "/parent/marks";
   return "/student/attendance";

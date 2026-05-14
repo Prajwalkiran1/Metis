@@ -28,10 +28,10 @@ type Course = {
   title: string;
   credits: number;
   semester: number;
-  course_type: "core" | "elective" | "lab";
+  course_type: "theory" | "lab" | "integrated" | "nptel";
 };
 
-const COURSE_TYPES = ["core", "elective", "lab"] as const;
+const COURSE_TYPES = ["theory", "lab", "integrated", "nptel"] as const;
 const SEMESTERS = Array.from({ length: 8 }, (_, i) => i + 1);
 
 const schema = z.object({
@@ -229,7 +229,7 @@ function CreateDialog({
       title: "",
       credits: 3,
       semester: defaultSem ? Number(defaultSem) : 1,
-      course_type: "core",
+      course_type: "theory",
     },
   });
   const [err, setErr] = useState<string | null>(null);
@@ -242,7 +242,7 @@ function CreateDialog({
         title: "",
         credits: 3,
         semester: defaultSem ? Number(defaultSem) : 1,
-        course_type: "core",
+        course_type: "theory",
       });
       setErr(null);
     }

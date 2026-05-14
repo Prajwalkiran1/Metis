@@ -8,15 +8,23 @@ import clsx from "clsx";
 import { getAccessToken, getRole } from "@/lib/auth";
 import { logout } from "@/lib/api";
 
+// Most entries are intentionally disabled. M10 a-e sessions wire them up;
+// this shell only ships the dashboard so the role is reachable.
 const NAV = [
-  { href: "/admin/academic", label: "Academic" },
-  { href: "/admin/users", label: "Users" },
-  // Stubs for future modules — kept here so the shell is complete.
-  { href: "/admin/reports", label: "Reports", disabled: true },
-  { href: "/admin/system", label: "System", disabled: true },
+  { href: "/hod/dashboard", label: "Dashboard" },
+  { href: "/hod/semester-setup", label: "Semester setup", disabled: true },
+  { href: "/hod/electives", label: "Electives", disabled: true },
+  { href: "/hod/lab-batches", label: "Lab batches", disabled: true },
+  { href: "/hod/cie-schedule", label: "CIE schedule", disabled: true },
+  { href: "/hod/tasks", label: "Tasks", disabled: true },
+  { href: "/hod/attendance-overrides", label: "Condonations", disabled: true },
+  { href: "/hod/hall-tickets", label: "Hall tickets", disabled: true },
+  { href: "/hod/see-upload", label: "SEE upload", disabled: true },
+  { href: "/hod/re-eval", label: "Re-evaluation", disabled: true },
+  { href: "/hod/analytics", label: "Analytics", disabled: true },
 ];
 
-export default function AdminLayout({ children }: { children: ReactNode }) {
+export default function HodLayout({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const [ready, setReady] = useState(false);
@@ -27,7 +35,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
       router.replace("/login");
       return;
     }
-    if (getRole() !== "admin") {
+    if (getRole() !== "hod") {
       router.replace("/login");
       return;
     }
@@ -42,7 +50,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
     <div className="flex min-h-screen">
       <aside className="w-56 border-r border-zinc-200 bg-white p-3">
         <div className="mb-5 px-2 text-sm font-semibold text-zinc-900">
-          Metis · admin
+          Metis · HOD
         </div>
         <nav className="space-y-1">
           {NAV.map((n) => (
