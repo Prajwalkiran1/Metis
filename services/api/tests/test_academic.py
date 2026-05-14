@@ -145,7 +145,7 @@ async def test_courses_crud_and_curriculum_filter(client):
             "title": "Sem 3 Course",
             "credits": 4,
             "semester": 3,
-            "course_type": "core",
+            "course_type": "theory",
         },
     )
     assert a.status_code == 201, a.text
@@ -158,7 +158,7 @@ async def test_courses_crud_and_curriculum_filter(client):
             "title": "Sem 4 Course",
             "credits": 4,
             "semester": 4,
-            "course_type": "core",
+            "course_type": "theory",
         },
     )
     assert b.status_code == 201

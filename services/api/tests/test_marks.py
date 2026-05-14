@@ -36,6 +36,21 @@ def _short() -> str:
     return uuid.uuid4().hex[:6]
 
 
+def _fresh_usn() -> str:
+    """Mint a BMSCE-pattern USN unique across reruns of the suite.
+
+    The USN format CHECK in migration 0009 enforces 1BM+YY+DD+RRR; the
+    pre-rework seed value `USN-<suffix>-<idx>` no longer satisfies it.
+    676×1000 = 676k slots in the AA..ZZ × 000..999 space — far more than
+    a long-running test database will ever exhaust.
+    """
+    u = uuid.uuid4().bytes
+    a = chr(ord("A") + (u[0] % 26))
+    b = chr(ord("A") + (u[1] % 26))
+    n = (u[2] * 256 + u[3]) % 1000
+    return f"1BM99{a}{b}{n:03d}"
+
+
 class _MarksSetup:
     def __init__(
         self,
@@ -138,7 +153,7 @@ async def _build_marks_setup(client, *, extra_students: int = 2) -> _MarksSetup:
     extra_ids: list[str] = []
     extra_uids: list[str] = []
     for i in range(extra_students):
-        uid = f"USN-{suffix}-{i}"
+        uid = _fresh_usn()
         r = await client.post(
             "/users",
             headers=admin_h,
@@ -410,7 +425,7 @@ async def test_set_single_mark_non_enrolled_student_403(client):
             "email": f"other-{_short()}@bmsce.ac.in",
             "name": "Outsider",
             "role": "student",
-            "usn": f"OUT-{_short()}",
+            "usn": _fresh_usn(),
         },
     )
     other_id = other.json()["id"]

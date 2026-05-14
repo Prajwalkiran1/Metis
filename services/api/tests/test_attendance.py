@@ -36,6 +36,19 @@ def _short() -> str:
     return uuid.uuid4().hex[:6]
 
 
+def _fresh_usn() -> str:
+    """Mint a BMSCE-pattern USN unique across reruns of the suite.
+
+    Format: 1BM + 2-digit year + 2-letter dept + 3-digit sequence.
+    Uses uuid randomness across the AA..ZZ × 000..999 space (676k slots).
+    """
+    u = uuid.uuid4().bytes
+    a = chr(ord("A") + (u[0] % 26))
+    b = chr(ord("A") + (u[1] % 26))
+    n = (u[2] * 256 + u[3]) % 1000
+    return f"1BM99{a}{b}{n:03d}"
+
+
 # ── Fixture: an isolated offering with a slot scheduled for tomorrow ────────
 class _Setup:
     def __init__(
@@ -105,12 +118,18 @@ async def _build_setup(client) -> _Setup:
     me = await client.get("/users/me", headers=teacher_h)
     seeded_teacher_id = me.json()["id"]
 
-    # Fresh student.
+    # Fresh student. USN format CHECK in migration 0009 requires the BMSCE
+    # pattern (1BM+YY+DD+RRR) on every student row.
     s_email = f"stud-{suffix}@bmsce.ac.in"
     r = await client.post(
         "/users",
         headers=admin_h,
-        json={"email": s_email, "name": "Test Student", "role": "student"},
+        json={
+            "email": s_email,
+            "name": "Test Student",
+            "role": "student",
+            "usn": _fresh_usn(),
+        },
     )
     assert r.status_code == 201, r.text
     student_id = r.json()["id"]
