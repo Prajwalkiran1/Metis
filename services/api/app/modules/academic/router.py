@@ -15,7 +15,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.db import SessionDep
-from app.core.deps import CurrentUser, require_admin
+from app.core.deps import CurrentUser, require_admin, require_teacher_hod_or_admin
 from app.modules.academic import service
 from app.modules.academic.models import (
     AcademicCalendarKind,
@@ -49,6 +49,9 @@ from app.modules.academic.schemas import (
     SectionCreate,
     SectionOut,
     SectionPatch,
+    AdHocExtraCreate,
+    AdHocRescheduleCreate,
+    AdHocRoomChangeCreate,
     TimetableExceptionCreate,
     TimetableExceptionOut,
     TimetableSlotCreate,
@@ -725,6 +728,106 @@ async def delete_timetable_exception(
     try:
         await service.delete_timetable_exception(
             session, actor=actor, exception_id=exception_id
+        )
+    except service.AcademicError as e:
+        raise _to_http(e) from e
+
+
+# ── Teacher/HOD-scoped ad-hoc class session routes ──────────────────────────
+@router.post(
+    "/offerings/{offering_id}/timetable-exceptions/extra",
+    response_model=TimetableExceptionOut,
+    status_code=201,
+)
+async def create_offering_extra_session(
+    offering_id: UUID,
+    body: AdHocExtraCreate,
+    session: SessionDep,
+    actor: User = Depends(require_teacher_hod_or_admin),
+) -> TimetableExceptionOut:
+    try:
+        exc = await service.create_extra_class_session(
+            session, actor=actor, offering_id=offering_id, payload=body
+        )
+    except service.AcademicError as e:
+        raise _to_http(e) from e
+    return TimetableExceptionOut.model_validate(exc)
+
+
+@router.post(
+    "/offerings/{offering_id}/timetable-exceptions/reschedule",
+    response_model=TimetableExceptionOut,
+    status_code=201,
+)
+async def create_offering_reschedule(
+    offering_id: UUID,
+    body: AdHocRescheduleCreate,
+    session: SessionDep,
+    actor: User = Depends(require_teacher_hod_or_admin),
+) -> TimetableExceptionOut:
+    try:
+        exc = await service.create_reschedule_exception(
+            session, actor=actor, offering_id=offering_id, payload=body
+        )
+    except service.AcademicError as e:
+        raise _to_http(e) from e
+    return TimetableExceptionOut.model_validate(exc)
+
+
+@router.post(
+    "/offerings/{offering_id}/timetable-exceptions/room-change",
+    response_model=TimetableExceptionOut,
+    status_code=201,
+)
+async def create_offering_room_change(
+    offering_id: UUID,
+    body: AdHocRoomChangeCreate,
+    session: SessionDep,
+    actor: User = Depends(require_teacher_hod_or_admin),
+) -> TimetableExceptionOut:
+    try:
+        exc = await service.create_room_change_exception(
+            session, actor=actor, offering_id=offering_id, payload=body
+        )
+    except service.AcademicError as e:
+        raise _to_http(e) from e
+    return TimetableExceptionOut.model_validate(exc)
+
+
+@router.get(
+    "/offerings/{offering_id}/timetable-exceptions",
+    response_model=list[TimetableExceptionOut],
+)
+async def list_offering_timetable_exceptions(
+    offering_id: UUID,
+    session: SessionDep,
+    actor: User = Depends(require_teacher_hod_or_admin),
+) -> list[TimetableExceptionOut]:
+    try:
+        rows = await service.list_offering_exceptions(
+            session, actor=actor, offering_id=offering_id
+        )
+    except service.AcademicError as e:
+        raise _to_http(e) from e
+    return [TimetableExceptionOut.model_validate(r) for r in rows]
+
+
+@router.delete(
+    "/offerings/{offering_id}/timetable-exceptions/{exception_id}",
+    status_code=204,
+)
+async def delete_offering_timetable_exception(
+    offering_id: UUID,
+    exception_id: UUID,
+    session: SessionDep,
+    actor: User = Depends(require_teacher_hod_or_admin),
+) -> None:
+    try:
+        await service.delete_offering_exception(
+            session,
+            actor=actor,
+            offering_id=offering_id,
+            exception_id=exception_id,
         )
     except service.AcademicError as e:
         raise _to_http(e) from e

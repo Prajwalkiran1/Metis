@@ -323,6 +323,36 @@ class TimetableExceptionCreate(BaseModel):
     reason: str | None = Field(default=None, max_length=200)
 
 
+# ── Teacher/HOD-scoped ad-hoc class session payloads ────────────────────────
+class AdHocExtraCreate(BaseModel):
+    """An extra one-off class with no parent recurring slot."""
+
+    exception_date: date
+    new_start_time: time
+    new_end_time: time
+    new_room_id: UUID
+    reason: str | None = Field(default=None, max_length=200)
+
+
+class AdHocRescheduleCreate(BaseModel):
+    """A recurring slot's occurrence moved to a different time on a given date.
+    The room can optionally change as part of the same reschedule."""
+
+    exception_date: date
+    new_start_time: time
+    new_end_time: time
+    new_room_id: UUID | None = None
+    reason: str | None = Field(default=None, max_length=200)
+
+
+class AdHocRoomChangeCreate(BaseModel):
+    """A recurring slot's room swapped on a single date; times unchanged."""
+
+    exception_date: date
+    new_room_id: UUID
+    reason: str | None = Field(default=None, max_length=200)
+
+
 # ── Academic calendar ───────────────────────────────────────────────────────
 class CalendarEntryOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)

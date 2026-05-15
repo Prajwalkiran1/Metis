@@ -632,3 +632,288 @@ def test_qr_verify_rejects_garbage():
 
     with pytest.raises(QRInvalidError):
         verify_qr("not-a-jwt")
+
+
+# ── Teacher/HOD-scoped ad-hoc class sessions (Session 2 audit) ──────────────
+@pytest.mark.asyncio
+async def test_ad_hoc_extra_session_creates_classsession(client):
+    """Teacher schedules a one-off extra class on a date with no recurring
+    slot. The materialiser produces a ClassSession of source='extra'."""
+    setup = await _build_setup(client)
+    # Pick a future date that the recurring slot does NOT cover — pick a date
+    # 8 days out and offset its weekday from the slot's day_of_week.
+    extra_date = setup.scheduled_date + timedelta(days=8)
+    r = await client.post(
+        f"/offerings/{setup.offering_id}/timetable-exceptions/extra",
+        headers=setup.teacher_headers,
+        json={
+            "exception_date": extra_date.isoformat(),
+            "new_start_time": "14:00:00",
+            "new_end_time": "15:00:00",
+            "new_room_id": setup.room_id,
+            "reason": "guest lecture",
+        },
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["kind"] == "extra"
+    assert body["original_slot_id"] is None
+    assert body["new_room_id"] == setup.room_id
+    # The materialiser should have created a class_session of source='extra'.
+    from sqlalchemy import select  # noqa: PLC0415
+    from app.core.db import SessionLocal  # noqa: PLC0415
+    from app.modules.attendance.models import (  # noqa: PLC0415
+        ClassSession,
+        ClassSessionSource,
+    )
+    async with SessionLocal() as s:
+        row = (
+            await s.execute(
+                select(ClassSession).where(
+                    ClassSession.course_offering_id == uuid.UUID(setup.offering_id),
+                    ClassSession.scheduled_date == extra_date,
+                    ClassSession.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+    assert row is not None
+    assert row.source == ClassSessionSource.extra
+    assert row.origin_slot_id is None
+    assert row.origin_exception_id == uuid.UUID(body["id"])
+
+
+@pytest.mark.asyncio
+async def test_ad_hoc_reschedule_anchors_to_recurring_slot(client):
+    """Teacher moves the slot's occurrence to a later time on the slot's
+    day. The materialiser links it back to the recurring slot."""
+    setup = await _build_setup(client)
+    r = await client.post(
+        f"/offerings/{setup.offering_id}/timetable-exceptions/reschedule",
+        headers=setup.teacher_headers,
+        json={
+            "exception_date": setup.scheduled_date.isoformat(),
+            "new_start_time": "12:00:00",
+            "new_end_time": "13:00:00",
+            "reason": "speaker conflict",
+        },
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["kind"] == "reschedule"
+    assert body["original_slot_id"] == setup.slot_id
+
+
+@pytest.mark.asyncio
+async def test_ad_hoc_room_change_anchors_to_recurring_slot(client):
+    setup = await _build_setup(client)
+    # Create a second room in the same college.
+    admin_h = setup.admin_headers
+    suffix = _short()
+    room2 = await client.post(
+        "/rooms",
+        headers=admin_h,
+        json={
+            "code": f"AT-LH2-{suffix}",
+            "room_type": "lecture",
+            "lat": "12.944",
+            "lon": "77.564",
+            "gps_radius_m": 100,
+        },
+    )
+    new_room_id = room2.json()["id"]
+    r = await client.post(
+        f"/offerings/{setup.offering_id}/timetable-exceptions/room-change",
+        headers=setup.teacher_headers,
+        json={
+            "exception_date": setup.scheduled_date.isoformat(),
+            "new_room_id": new_room_id,
+            "reason": "AC out in original room",
+        },
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["kind"] == "room_change"
+    assert body["new_room_id"] == new_room_id
+    assert body["original_slot_id"] == setup.slot_id
+    assert body["new_start_time"] is None
+    assert body["new_end_time"] is None
+
+
+@pytest.mark.asyncio
+async def test_ad_hoc_reject_when_no_recurring_slot(client):
+    """reschedule + room_change require a recurring slot on that weekday."""
+    setup = await _build_setup(client)
+    # Pick a date 5 days out and shift weekday off the slot's day_of_week.
+    no_slot_date = setup.scheduled_date + timedelta(days=5)
+    if no_slot_date.weekday() == setup.scheduled_date.weekday():
+        no_slot_date = no_slot_date + timedelta(days=1)
+    r = await client.post(
+        f"/offerings/{setup.offering_id}/timetable-exceptions/reschedule",
+        headers=setup.teacher_headers,
+        json={
+            "exception_date": no_slot_date.isoformat(),
+            "new_start_time": "12:00:00",
+            "new_end_time": "13:00:00",
+        },
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "no_matching_slot"
+
+
+@pytest.mark.asyncio
+async def test_ad_hoc_reject_when_end_not_after_start(client):
+    setup = await _build_setup(client)
+    extra_date = setup.scheduled_date + timedelta(days=10)
+    r = await client.post(
+        f"/offerings/{setup.offering_id}/timetable-exceptions/extra",
+        headers=setup.teacher_headers,
+        json={
+            "exception_date": extra_date.isoformat(),
+            "new_start_time": "14:00:00",
+            "new_end_time": "14:00:00",
+            "new_room_id": setup.room_id,
+        },
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "bad_exception"
+
+
+@pytest.mark.asyncio
+async def test_ad_hoc_student_role_rejected(client):
+    """The dependency layer rejects students before service-layer auth even
+    runs. They get 403 from require_teacher_hod_or_admin."""
+    setup = await _build_setup(client)
+    extra_date = setup.scheduled_date + timedelta(days=12)
+    r = await client.post(
+        f"/offerings/{setup.offering_id}/timetable-exceptions/extra",
+        headers=setup.student_headers,
+        json={
+            "exception_date": extra_date.isoformat(),
+            "new_start_time": "14:00:00",
+            "new_end_time": "15:00:00",
+            "new_room_id": setup.room_id,
+        },
+    )
+    assert r.status_code == 403, r.text
+
+
+@pytest.mark.asyncio
+async def test_ad_hoc_non_owner_teacher_rejected(client):
+    """A teacher who doesn't own the offering can't create exceptions."""
+    setup = await _build_setup(client)
+    # The legacy seeded teacher@bmsce.ac.in owns setup.offering_id. The seed
+    # ships teacher-cse-1 et al., each of whom is logged-in via the
+    # password; pick one that is NOT seeded as the offering owner.
+    other = await _login(client, "teacher-cse-1@bmsce.ac.in")
+    extra_date = setup.scheduled_date + timedelta(days=13)
+    r = await client.post(
+        f"/offerings/{setup.offering_id}/timetable-exceptions/extra",
+        headers=other,
+        json={
+            "exception_date": extra_date.isoformat(),
+            "new_start_time": "14:00:00",
+            "new_end_time": "15:00:00",
+            "new_room_id": setup.room_id,
+        },
+    )
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["code"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_ad_hoc_hod_of_other_dept_rejected(client):
+    """An HOD whose department doesn't own the course gets 403."""
+    setup = await _build_setup(client)
+    # The seeded HOD belongs to CSE; the offering's dept is the freshly-
+    # created AT-{suffix} dept from _build_setup, so the HOD is not the HOD
+    # of this offering's department.
+    hod = await _login(client, "hod@bmsce.ac.in")
+    extra_date = setup.scheduled_date + timedelta(days=15)
+    r = await client.post(
+        f"/offerings/{setup.offering_id}/timetable-exceptions/extra",
+        headers=hod,
+        json={
+            "exception_date": extra_date.isoformat(),
+            "new_start_time": "14:00:00",
+            "new_end_time": "15:00:00",
+            "new_room_id": setup.room_id,
+        },
+    )
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["code"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_ad_hoc_list_and_delete_round_trip(client):
+    """Create three exceptions, list them, delete one, list again."""
+    setup = await _build_setup(client)
+    base = setup.scheduled_date + timedelta(days=7)
+    # Find a date that the slot doesn't recur on so the extra creation
+    # doesn't collide with reschedule below.
+    extra_date = base
+    if extra_date.weekday() == setup.scheduled_date.weekday():
+        extra_date = extra_date + timedelta(days=1)
+    e1 = await client.post(
+        f"/offerings/{setup.offering_id}/timetable-exceptions/extra",
+        headers=setup.teacher_headers,
+        json={
+            "exception_date": extra_date.isoformat(),
+            "new_start_time": "16:00:00",
+            "new_end_time": "17:00:00",
+            "new_room_id": setup.room_id,
+        },
+    )
+    assert e1.status_code == 201, e1.text
+    e2 = await client.post(
+        f"/offerings/{setup.offering_id}/timetable-exceptions/reschedule",
+        headers=setup.teacher_headers,
+        json={
+            "exception_date": setup.scheduled_date.isoformat(),
+            "new_start_time": "15:00:00",
+            "new_end_time": "16:00:00",
+        },
+    )
+    assert e2.status_code == 201, e2.text
+    listing = await client.get(
+        f"/offerings/{setup.offering_id}/timetable-exceptions",
+        headers=setup.teacher_headers,
+    )
+    assert listing.status_code == 200
+    rows = listing.json()
+    assert len(rows) == 2
+    # Delete one.
+    d = await client.delete(
+        f"/offerings/{setup.offering_id}/timetable-exceptions/{e1.json()['id']}",
+        headers=setup.teacher_headers,
+    )
+    assert d.status_code == 204
+    listing2 = await client.get(
+        f"/offerings/{setup.offering_id}/timetable-exceptions",
+        headers=setup.teacher_headers,
+    )
+    assert len(listing2.json()) == 1
+
+
+@pytest.mark.asyncio
+async def test_ad_hoc_duplicate_reschedule_blocked(client):
+    """Two reschedule rows on the same (slot, date) violate the partial
+    unique index uq_exceptions_slot_date and return 409."""
+    setup = await _build_setup(client)
+    body = {
+        "exception_date": setup.scheduled_date.isoformat(),
+        "new_start_time": "13:00:00",
+        "new_end_time": "14:00:00",
+    }
+    r1 = await client.post(
+        f"/offerings/{setup.offering_id}/timetable-exceptions/reschedule",
+        headers=setup.teacher_headers,
+        json=body,
+    )
+    assert r1.status_code == 201, r1.text
+    r2 = await client.post(
+        f"/offerings/{setup.offering_id}/timetable-exceptions/reschedule",
+        headers=setup.teacher_headers,
+        json={**body, "new_start_time": "13:30:00", "new_end_time": "14:30:00"},
+    )
+    assert r2.status_code == 409, r2.text
+    assert r2.json()["detail"]["code"] == "duplicate_exception"

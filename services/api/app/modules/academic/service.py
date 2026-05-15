@@ -1475,6 +1475,28 @@ async def create_timetable_exception(
     return exc
 
 
+async def _detach_class_sessions_from_exception(
+    session: AsyncSession, *, exception_id: UUID
+) -> None:
+    """The class_sessions.origin_exception_id FK is NO ACTION, so any session
+    materialised from this exception blocks its delete. Soft-delete those
+    sessions first; the subsequent _rematerialise_for_event call rebuilds
+    the canonical class_session for non-extra kinds (extra-kind sessions
+    simply vanish, which matches their semantics)."""
+    from app.modules.attendance.models import ClassSession  # noqa: PLC0415
+
+    rows = await session.execute(
+        select(ClassSession).where(
+            ClassSession.origin_exception_id == exception_id,
+            ClassSession.deleted_at.is_(None),
+        )
+    )
+    now = utcnow()
+    for cs in rows.scalars().all():
+        cs.origin_exception_id = None
+        cs.deleted_at = now
+
+
 async def delete_timetable_exception(
     session: AsyncSession, *, actor: User, exception_id: UUID
 ) -> None:
@@ -1489,6 +1511,8 @@ async def delete_timetable_exception(
     if exc is None:
         raise AcademicError("not_found", "exception not found", 404)
     offering_id = exc.course_offering_id
+    await _detach_class_sessions_from_exception(session, exception_id=exc.id)
+    await session.flush()
     await session.delete(exc)
     await write_audit(
         session,
@@ -1500,6 +1524,284 @@ async def delete_timetable_exception(
     )
     await _rematerialise_for_event(session, offering_id=offering_id)
     # TODO(events): publish timetable.updated (non-M3 consumers).
+    await session.commit()
+
+
+# ── Teacher/HOD-scoped ad-hoc class session helpers ─────────────────────────
+async def _require_offering_actor(
+    session: AsyncSession, *, actor: User, offering: CourseOffering
+) -> None:
+    """Authorise an action against a course offering. Admin always wins.
+    Teachers must own the offering. HODs must own the offering's course's
+    department."""
+    if actor.role == UserRole.admin:
+        return
+    if actor.role == UserRole.teacher:
+        if offering.teacher_user_id != actor.id:
+            raise AcademicError(
+                "forbidden", "you do not teach this offering", 403
+            )
+        return
+    if actor.role == UserRole.hod:
+        course = await session.get(Course, offering.course_id)
+        if course is None:
+            raise AcademicError("bad_offering", "course not found", 400)
+        if course.department_id != actor.hod_of_department_id:
+            raise AcademicError(
+                "forbidden", "offering not in your department", 403
+            )
+        return
+    raise AcademicError("forbidden", "teacher / HOD / admin only", 403)
+
+
+async def _find_recurring_slot_for_date(
+    session: AsyncSession, *, offering_id: UUID, exception_date: date
+) -> TimetableSlot:
+    """Return the recurring slot for the offering that covers this date.
+    Raises AcademicError(no_matching_slot) when there isn't one — used by
+    reschedule + room_change to anchor the exception to a parent slot."""
+    rows = await session.execute(
+        select(TimetableSlot).where(
+            TimetableSlot.course_offering_id == offering_id,
+            TimetableSlot.deleted_at.is_(None),
+            TimetableSlot.day_of_week == exception_date.weekday(),
+            TimetableSlot.effective_from <= exception_date,
+            TimetableSlot.effective_until >= exception_date,
+        )
+    )
+    slot = rows.scalars().first()
+    if slot is None:
+        raise AcademicError(
+            "no_matching_slot",
+            "no recurring slot covers this date for that offering",
+            400,
+        )
+    return slot
+
+
+async def _commit_offering_exception(
+    session: AsyncSession,
+    *,
+    actor: User,
+    exc: TimetableException,
+) -> TimetableException:
+    """Shared finaliser: flush + IntegrityError → 409, audit, rematerialise,
+    commit, refresh."""
+    session.add(exc)
+    try:
+        await session.flush()
+    except IntegrityError as e:
+        await session.rollback()
+        raise AcademicError(
+            "duplicate_exception",
+            "an exception for this slot on this date already exists",
+            409,
+        ) from e
+    await write_audit(
+        session,
+        action="timetable_exception.create",
+        entity_type="timetable_exception",
+        entity_id=exc.id,
+        actor_user_id=actor.id,
+        college_id=actor.college_id,
+        new_value={
+            "kind": exc.kind.value,
+            "exception_date": exc.exception_date.isoformat(),
+            "offering_id": str(exc.course_offering_id),
+        },
+    )
+    await _rematerialise_for_event(session, offering_id=exc.course_offering_id)
+    # TODO(events): publish timetable.updated.
+    await session.commit()
+    await session.refresh(exc)
+    return exc
+
+
+async def create_extra_class_session(
+    session: AsyncSession,
+    *,
+    actor: User,
+    offering_id: UUID,
+    payload,
+) -> TimetableException:
+    """Teacher/HOD: schedule a one-off extra class with no parent recurring
+    slot. The materialiser produces a ClassSession of source='extra'."""
+    if payload.new_end_time <= payload.new_start_time:
+        raise AcademicError(
+            "bad_exception", "new_end_time must be after new_start_time", 400
+        )
+    offering = await _get_active(
+        session, CourseOffering, offering_id, actor.college_id
+    )
+    if offering is None:
+        raise AcademicError("bad_offering", "course offering not found", 400)
+    await _require_offering_actor(session, actor=actor, offering=offering)
+    room = await _get_active(session, Room, payload.new_room_id, actor.college_id)
+    if room is None:
+        raise AcademicError(
+            "bad_room", "new_room_id not found in your college", 400
+        )
+    exc = TimetableException(
+        college_id=actor.college_id,
+        course_offering_id=offering.id,
+        original_slot_id=None,
+        exception_date=payload.exception_date,
+        kind=TimetableExceptionKind.extra,
+        new_room_id=payload.new_room_id,
+        new_start_time=payload.new_start_time,
+        new_end_time=payload.new_end_time,
+        reason=payload.reason,
+        created_by=actor.id,
+    )
+    return await _commit_offering_exception(session, actor=actor, exc=exc)
+
+
+async def create_reschedule_exception(
+    session: AsyncSession,
+    *,
+    actor: User,
+    offering_id: UUID,
+    payload,
+) -> TimetableException:
+    """Teacher/HOD: move a single occurrence's time on an existing recurring
+    slot. Optionally swap the room in the same row."""
+    if payload.new_end_time <= payload.new_start_time:
+        raise AcademicError(
+            "bad_exception", "new_end_time must be after new_start_time", 400
+        )
+    offering = await _get_active(
+        session, CourseOffering, offering_id, actor.college_id
+    )
+    if offering is None:
+        raise AcademicError("bad_offering", "course offering not found", 400)
+    await _require_offering_actor(session, actor=actor, offering=offering)
+    if payload.new_room_id is not None:
+        room = await _get_active(session, Room, payload.new_room_id, actor.college_id)
+        if room is None:
+            raise AcademicError(
+                "bad_room", "new_room_id not found in your college", 400
+            )
+    slot = await _find_recurring_slot_for_date(
+        session, offering_id=offering.id, exception_date=payload.exception_date
+    )
+    exc = TimetableException(
+        college_id=actor.college_id,
+        course_offering_id=offering.id,
+        original_slot_id=slot.id,
+        exception_date=payload.exception_date,
+        kind=TimetableExceptionKind.reschedule,
+        new_room_id=payload.new_room_id,
+        new_start_time=payload.new_start_time,
+        new_end_time=payload.new_end_time,
+        reason=payload.reason,
+        created_by=actor.id,
+    )
+    return await _commit_offering_exception(session, actor=actor, exc=exc)
+
+
+async def create_room_change_exception(
+    session: AsyncSession,
+    *,
+    actor: User,
+    offering_id: UUID,
+    payload,
+) -> TimetableException:
+    """Teacher/HOD: swap the room on a single occurrence of a recurring slot.
+    Times stay as the parent slot defines them."""
+    offering = await _get_active(
+        session, CourseOffering, offering_id, actor.college_id
+    )
+    if offering is None:
+        raise AcademicError("bad_offering", "course offering not found", 400)
+    await _require_offering_actor(session, actor=actor, offering=offering)
+    room = await _get_active(session, Room, payload.new_room_id, actor.college_id)
+    if room is None:
+        raise AcademicError(
+            "bad_room", "new_room_id not found in your college", 400
+        )
+    slot = await _find_recurring_slot_for_date(
+        session, offering_id=offering.id, exception_date=payload.exception_date
+    )
+    exc = TimetableException(
+        college_id=actor.college_id,
+        course_offering_id=offering.id,
+        original_slot_id=slot.id,
+        exception_date=payload.exception_date,
+        kind=TimetableExceptionKind.room_change,
+        new_room_id=payload.new_room_id,
+        new_start_time=None,
+        new_end_time=None,
+        reason=payload.reason,
+        created_by=actor.id,
+    )
+    return await _commit_offering_exception(session, actor=actor, exc=exc)
+
+
+async def list_offering_exceptions(
+    session: AsyncSession,
+    *,
+    actor: User,
+    offering_id: UUID,
+) -> list[TimetableException]:
+    """Teacher/HOD/admin view of every exception row for an offering, newest
+    first. Used by the teacher-side ad-hoc panel."""
+    offering = await _get_active(
+        session, CourseOffering, offering_id, actor.college_id
+    )
+    if offering is None:
+        raise AcademicError("bad_offering", "course offering not found", 400)
+    await _require_offering_actor(session, actor=actor, offering=offering)
+    rows = await session.execute(
+        select(TimetableException)
+        .where(
+            TimetableException.course_offering_id == offering.id,
+            TimetableException.college_id == actor.college_id,
+        )
+        .order_by(
+            TimetableException.exception_date.desc(),
+            TimetableException.created_at.desc(),
+        )
+    )
+    return list(rows.scalars().all())
+
+
+async def delete_offering_exception(
+    session: AsyncSession,
+    *,
+    actor: User,
+    offering_id: UUID,
+    exception_id: UUID,
+) -> None:
+    """Teacher/HOD/admin delete of a specific exception row. The
+    materialiser is re-run so the affected ClassSession is patched back."""
+    offering = await _get_active(
+        session, CourseOffering, offering_id, actor.college_id
+    )
+    if offering is None:
+        raise AcademicError("bad_offering", "course offering not found", 400)
+    await _require_offering_actor(session, actor=actor, offering=offering)
+    row = await session.execute(
+        select(TimetableException).where(
+            TimetableException.id == exception_id,
+            TimetableException.college_id == actor.college_id,
+            TimetableException.course_offering_id == offering.id,
+        )
+    )
+    exc = row.scalar_one_or_none()
+    if exc is None:
+        raise AcademicError("not_found", "exception not found", 404)
+    await _detach_class_sessions_from_exception(session, exception_id=exc.id)
+    await session.flush()
+    await session.delete(exc)
+    await write_audit(
+        session,
+        action="timetable_exception.delete",
+        entity_type="timetable_exception",
+        entity_id=exception_id,
+        actor_user_id=actor.id,
+        college_id=actor.college_id,
+    )
+    await _rematerialise_for_event(session, offering_id=offering.id)
     await session.commit()
 
 
