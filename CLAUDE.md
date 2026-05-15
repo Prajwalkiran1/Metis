@@ -516,7 +516,7 @@ git log -1 --format='%B'         # should NOT contain "Co-Authored-By: Claude" o
 
 ```yaml
 last_updated: "2026-05-15"
-active_module: M10e_shipped_module_complete
+active_module: demo_seed_shipped
 
 # Local DB head stays at 0012 — M10e adds the last ORM mappings
 # (HallTicket/HallTicketVersion/GradeCard/GradeCardVersion/SEEResult/
@@ -869,6 +869,35 @@ infrastructure:
   vercel_linked: false
   render_services: []
   sentry_configured: false
+
+demo_seed_state:
+  scripts:
+    - "infra/scripts/reset_demo.py — TRUNCATE every public table except alembic_version. Preserves migration head (currently 0012). Idempotent + logs row counts."
+    - "infra/scripts/seed.py — replaces the v1 seed with a comprehensive BMSCE-shaped demo. Curated Indian names from infra/scripts/_demo_names.py."
+    - "Standard cycle: `uv run --project services/api python infra/scripts/reset_demo.py` then `uv run --project services/api python infra/scripts/seed.py`. Full cycle ~10s."
+  what_exists_after_seed:
+    institution: "1 college (BMSCE), 7 departments (CSE, ISE, ECE, CSE-DS, AIML, ME, EEE)."
+    users: "~5,950 total — 1 admin, 7 HODs, 47 teachers, ~2,560 students, ~3,330 parents. CSE + ISE have 3 sections per batch; others have 2. ~40 students per section. Hashed once and reused (argon2id is expensive)."
+    terms: "4 academic_terms — 2025-ODD (archived stub), 2025-EVEN (past, fully populated with SEE), 2026-ODD (current, mid-semester), 2026-EVEN (future skeleton). Registration windows closed for current, open in the future."
+    focal_cohort: "CSE 2023 batch (currently sem 7) has the deepest data: full setup + course offerings, 6 wks of class_sessions + 52K attendance rows, CIE-1 marks for ~80% of students, full past-term marks + SEE + grade cards. Other batches have light enrollments only."
+    schemes: "3 institutional templates (Theory / Integrated / NPTEL Standard) + 2 dept templates (CSE programming-heavy, ECE lab-heavy). Each offering instantiates from the matching template. CSE-Sem7-Compiler-Design has AAT=30% with an `assessment_scheme_unlock` academic_override audit row."
+    electives: "CSE Professional Elective III has 4 options — one healthy, one under-strength (HOD-dashboard callout), one dissolved with 3 migrated students. CSE-DS has its own Domain Elective II group."
+    workflow_data: "120 hall_tickets (HOD-approved), 120 grade_cards (one in v2 with trigger_reason='see_released' for the focal student #1), 98 see_results (96 originals + 2 re-eval revised), 2 re_evaluations (improved + held), 42 CIE schedule entries (CIE-1 + CIE-2 published), 9 tasks (mixed states), 8 internal_deadlines, 5 academic_overrides (condonations + scheme unlock + lab incharge + mark unlock + student migration), 11 admin_notifications."
+    events: "Best-effort `publish()` calls fire for `semester_setup.published` (7 events) and `grade_card.regenerated` (1 event from the v2 trigger). The M10d subscriber writes admin_notifications when running; the seed also writes them directly so /admin/notifications has content even when Redis is offline."
+  walkthrough_logins:
+    password: "MetisDemo!2026"
+    accounts:
+      - "admin@bmsce.ac.in — admin"
+      - "hod@bmsce.ac.in — CSE HOD (focal dept). Legacy address so existing pytest fixtures keep working."
+      - "hod-ise@bmsce.ac.in (and hod-ece, hod-cse-ds, hod-aiml, hod-me, hod-eee) — other HODs."
+      - "teacher-cse-1@bmsce.ac.in (and -2 through -8) — CSE teachers."
+      - "student-1bm23cs001@bmsce.ac.in — focal student (CSE 2023, USN 1BM23CS001). Has a v2 grade card from the late-SEE flow."
+      - "parent-1bm23cs001-1@bmsce.ac.in — focal student's first parent."
+      - "teacher@bmsce.ac.in + student@bmsce.ac.in — legacy demo users retained for test_marks / test_academic / test_m2_rework fixtures. The student carries USN 1BM24CS999 and is enrolled in CSE-2024-A current term."
+  notes:
+    - "PDFs (hall ticket + grade card) are seeded with `inline:{version_id}` URLs matching the M10e convention. The /workflow/hall-tickets/{version_id}/download and /workflow/grade-cards/{version_id}/download routes regenerate bytes from the snapshot JSON on demand. R2 wiring stays deferred."
+    - "RNG is seeded deterministically (random.Random(2026_05_15)) so re-running yields identical row counts (verified)."
+    - "departments.name column already existed at migration 0007 — no new migration was needed for the demo seed."
 ```
 
 ---
