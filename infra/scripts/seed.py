@@ -460,6 +460,10 @@ async def _seed_academic(session: AsyncSession, *, college_id) -> None:
         )
 
     # ── One Wednesday holiday inside the term (M3 must skip it) ─────────────
+    # Use `.first()` not `.scalar_one_or_none()` so we don't blow up if an
+    # earlier seed run (with a buggier version of this block) left duplicate
+    # rows behind — we just stop adding more and let the dev clean up. The
+    # check is still idempotent: when at least one row exists we no-op.
     holiday_date = date(2026, 8, 15)  # Independence Day (a Saturday in 2026)
     existing_hol = (
         await session.execute(
@@ -470,7 +474,7 @@ async def _seed_academic(session: AsyncSession, *, college_id) -> None:
                 AcademicCalendarEntry.deleted_at.is_(None),
             )
         )
-    ).scalar_one_or_none()
+    ).scalars().first()
     if existing_hol is None:
         session.add(
             AcademicCalendarEntry(
