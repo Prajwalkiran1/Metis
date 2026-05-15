@@ -22,6 +22,7 @@ from app.modules.users.router import router as users_router
 from app.modules.workflow.router import (
     admin_notifications_router,
     hod_router,
+    student_registration_router,
     workflow_router,
 )
 
@@ -79,6 +80,9 @@ def create_app() -> FastAPI:
     app.include_router(marks_router, prefix=settings.api_v1_prefix)
     app.include_router(hod_router, prefix=settings.api_v1_prefix)
     app.include_router(workflow_router, prefix=settings.api_v1_prefix)
+    app.include_router(
+        student_registration_router, prefix=settings.api_v1_prefix
+    )
     app.include_router(admin_notifications_router, prefix=settings.api_v1_prefix)
     return app
 

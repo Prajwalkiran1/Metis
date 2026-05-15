@@ -24,6 +24,7 @@ from app.core.deps import (
     require_admin,
     require_hod,
     require_hod_or_admin,
+    require_student,
 )
 from app.modules.academic.models import (
     Course,
@@ -32,24 +33,38 @@ from app.modules.academic.models import (
     Section,
 )
 from app.modules.users.models import User
-from app.modules.workflow import service
+from app.modules.workflow import service, service_m10b
 from app.modules.workflow.models import SemesterSetup, SemesterSetupState
 from app.modules.workflow.schemas import (
     AdminNotificationOut,
+    CapRequest,
+    CapResponse,
+    CascadeSummary,
     CourseAssignmentCreate,
     CourseAssignmentOut,
     CourseAssignmentPatch,
+    DisplacedStudent,
+    DissolveRequest,
+    DissolveResponse,
     ElectiveGroupCreate,
+    ElectiveGroupEnrollmentView,
     ElectiveGroupOptionCreate,
     ElectiveGroupOptionOut,
     ElectiveGroupOptionPatch,
     ElectiveGroupOut,
     ElectiveGroupPatch,
+    ManualMigrateRequest,
+    ManualMigrateResponse,
     Page,
+    RegistrationChoice,
+    RegistrationRowOut,
+    RegistrationWindowSet,
     SemesterSetupCreate,
     SemesterSetupDetail,
     SemesterSetupOut,
     SemesterSetupPatch,
+    StudentRegistrationSubmit,
+    StudentRegistrationView,
 )
 
 
@@ -76,6 +91,7 @@ class HodDashboardOut(BaseModel):
     department: dict[str, Any]
     teaching_offerings: list[TeachingOfferingOut]
     current_term_setup: dict[str, Any] | None
+    electives_summary: dict[str, Any] | None
     placeholder: dict[str, Any]
 
 
@@ -169,10 +185,59 @@ async def hod_dashboard(
             else None,
         }
 
+    # M10b — count under-subscribed elective options on the current setup so
+    # the dashboard can link to /hod/electives with a hot-spot callout.
+    electives_summary: dict[str, Any] | None = None
+    if latest is not None:
+        from app.modules.workflow.models import (  # local — avoids cycles
+            CourseRegistration as _CR,
+            ElectiveGroup as _EG,
+            ElectiveGroupOption as _EGO,
+        )
+
+        eg_rows = (
+            await session.execute(
+                select(_EG.id, _EG.min_enrollment_to_run).where(
+                    _EG.semester_setup_id == latest.id,
+                    _EG.deleted_at.is_(None),
+                )
+            )
+        ).all()
+        under = 0
+        total_options = 0
+        for eg_id, min_run in eg_rows:
+            options = (
+                await session.execute(
+                    select(_EGO.id).where(
+                        _EGO.elective_group_id == eg_id,
+                        _EGO.deleted_at.is_(None),
+                        _EGO.is_dissolved.is_(False),
+                    )
+                )
+            ).all()
+            for (opt_id,) in options:
+                total_options += 1
+                count = (
+                    await session.execute(
+                        select(func.count(_CR.id)).where(
+                            _CR.elective_group_option_id == opt_id,
+                            _CR.status == "approved",
+                            _CR.deleted_at.is_(None),
+                        )
+                    )
+                ).scalar_one()
+                if int(count) < min_run:
+                    under += 1
+        electives_summary = {
+            "under_subscribed_count": under,
+            "total_options": total_options,
+        }
+
     return HodDashboardOut(
         department={"id": str(dept.id), "code": dept.code, "name": dept.name},
         teaching_offerings=teaching,
         current_term_setup=current_setup,
+        electives_summary=electives_summary,
         placeholder={
             "message": "M10 will populate this dashboard with department analytics.",
             "department_active_offerings": int(dept_offering_count),
@@ -633,6 +698,253 @@ async def list_admin_notifications(
     return Page[AdminNotificationOut](
         items=[AdminNotificationOut.model_validate(r) for r in rows], total=total
     )
+
+
+# ── M10b: registration window ───────────────────────────────────────────────
+@workflow_router.post(
+    "/semester-setups/{setup_id}/registration-window",
+    response_model=SemesterSetupOut,
+)
+async def set_registration_window(
+    setup_id: UUID,
+    payload: RegistrationWindowSet,
+    session: SessionDep,
+    actor: User = Depends(require_hod),
+) -> SemesterSetupOut:
+    try:
+        setup = await service_m10b.set_registration_window(
+            session,
+            actor=actor,
+            setup_id=setup_id,
+            opens_at=payload.opens_at,
+            closes_at=payload.closes_at,
+        )
+    except service.WorkflowError as e:
+        raise _to_http(e) from e
+    return SemesterSetupOut.model_validate(setup)
+
+
+# ── M10b: HOD enrollment view + dissolve / migrate / cap ───────────────────
+@workflow_router.get(
+    "/elective-groups/{eg_id}/enrollment",
+    response_model=ElectiveGroupEnrollmentView,
+)
+async def get_elective_group_enrollment(
+    eg_id: UUID,
+    session: SessionDep,
+    actor: User = Depends(require_hod),
+) -> ElectiveGroupEnrollmentView:
+    try:
+        d = await service_m10b.get_group_enrollment_view(
+            session, actor=actor, eg_id=eg_id
+        )
+    except service.WorkflowError as e:
+        raise _to_http(e) from e
+    return ElectiveGroupEnrollmentView.model_validate(d)
+
+
+@workflow_router.post(
+    "/elective-groups/{eg_id}/options/{option_id}/dissolve/preview",
+    response_model=CascadeSummary,
+)
+async def dissolve_option_preview(
+    eg_id: UUID,
+    option_id: UUID,
+    payload: DissolveRequest,
+    session: SessionDep,
+    actor: User = Depends(require_hod),
+) -> CascadeSummary:
+    try:
+        d = await service_m10b.dissolve_option_preview(
+            session,
+            actor=actor,
+            eg_id=eg_id,
+            option_id=option_id,
+            target_option_id=payload.target_option_id,
+        )
+    except service.WorkflowError as e:
+        raise _to_http(e) from e
+    return CascadeSummary.model_validate(d)
+
+
+@workflow_router.post(
+    "/elective-groups/{eg_id}/options/{option_id}/dissolve",
+    response_model=DissolveResponse,
+)
+async def dissolve_option(
+    eg_id: UUID,
+    option_id: UUID,
+    payload: DissolveRequest,
+    session: SessionDep,
+    actor: User = Depends(require_hod),
+) -> DissolveResponse:
+    try:
+        summary, dissolved_payload, student_migrated_payloads = (
+            await service_m10b.dissolve_option(
+                session,
+                actor=actor,
+                eg_id=eg_id,
+                option_id=option_id,
+                target_option_id=payload.target_option_id,
+                reason=payload.reason,
+                evidence_url=payload.evidence_url,
+            )
+        )
+    except service.WorkflowError as e:
+        raise _to_http(e) from e
+
+    # Post-commit event emission. Failures are swallowed by the publisher.
+    from app.core.event_bus import publish as publish_event
+
+    event = await publish_event(
+        "elective.dissolved",
+        dissolved_payload,
+        college_id=actor.college_id,
+        actor_user_id=actor.id,
+    )
+    for p in student_migrated_payloads:
+        await publish_event(
+            "student.migrated",
+            p,
+            college_id=actor.college_id,
+            actor_user_id=actor.id,
+        )
+    return DissolveResponse(
+        summary=CascadeSummary.model_validate(summary),
+        event=event,
+    )
+
+
+@workflow_router.post(
+    "/elective-groups/{eg_id}/migrate-student",
+    response_model=ManualMigrateResponse,
+)
+async def migrate_student_manual(
+    eg_id: UUID,
+    payload: ManualMigrateRequest,
+    session: SessionDep,
+    actor: User = Depends(require_hod),
+) -> ManualMigrateResponse:
+    try:
+        summary, student_migrated_payload = await service_m10b.migrate_student_manual(
+            session,
+            actor=actor,
+            eg_id=eg_id,
+            student_id=payload.student_id,
+            from_option_id=payload.from_option_id,
+            to_option_id=payload.to_option_id,
+            reason=payload.reason,
+        )
+    except service.WorkflowError as e:
+        raise _to_http(e) from e
+    from app.core.event_bus import publish as publish_event
+
+    event = await publish_event(
+        "student.migrated",
+        student_migrated_payload,
+        college_id=actor.college_id,
+        actor_user_id=actor.id,
+    )
+    return ManualMigrateResponse(
+        summary=CascadeSummary.model_validate(summary),
+        event=event,
+    )
+
+
+@workflow_router.post(
+    "/elective-groups/{eg_id}/options/{option_id}/cap",
+    response_model=CapResponse,
+)
+async def cap_option_capacity(
+    eg_id: UUID,
+    option_id: UUID,
+    payload: CapRequest,
+    session: SessionDep,
+    actor: User = Depends(require_hod),
+) -> CapResponse:
+    try:
+        out = await service_m10b.cap_option_capacity(
+            session,
+            actor=actor,
+            eg_id=eg_id,
+            option_id=option_id,
+            max_enrollment=payload.max_enrollment,
+            redistribute_to_option_id=payload.redistribute_to_option_id,
+            redistribute_strategy=payload.redistribute_strategy,
+        )
+    except service.WorkflowError as e:
+        raise _to_http(e) from e
+
+    from app.core.event_bus import publish as publish_event
+
+    for p in out.get("events", []):
+        await publish_event(
+            "student.migrated",
+            p,
+            college_id=actor.college_id,
+            actor_user_id=actor.id,
+        )
+    return CapResponse(
+        new_max=out["new_max"],
+        displaced=[DisplacedStudent.model_validate(d) for d in out.get("displaced", [])],
+        summary=(
+            CascadeSummary.model_validate(out["summary"])
+            if out.get("summary")
+            else None
+        ),
+    )
+
+
+# ── M10b: student-side registration endpoints ──────────────────────────────
+student_registration_router = APIRouter(
+    prefix="/student/registration", tags=["student"]
+)
+
+
+@student_registration_router.get("", response_model=StudentRegistrationView)
+async def student_registration_view(
+    session: SessionDep,
+    actor: User = Depends(require_student),
+) -> StudentRegistrationView:
+    try:
+        d = await service_m10b.get_student_registration_view(
+            session, student=actor
+        )
+    except service.WorkflowError as e:
+        raise _to_http(e) from e
+    return StudentRegistrationView.model_validate(d)
+
+
+@student_registration_router.post(
+    "/electives", response_model=list[RegistrationRowOut]
+)
+async def student_submit_electives(
+    payload: StudentRegistrationSubmit,
+    session: SessionDep,
+    actor: User = Depends(require_student),
+) -> list[RegistrationRowOut]:
+    try:
+        rows = await service_m10b.submit_student_registration(
+            session,
+            student=actor,
+            choices=[(c.elective_group_id, c.elective_group_option_id) for c in payload.choices],
+        )
+    except service.WorkflowError as e:
+        raise _to_http(e) from e
+    return [RegistrationRowOut.model_validate(r) for r in rows]
+
+
+@student_registration_router.get(
+    "/status", response_model=list[RegistrationRowOut]
+)
+async def student_registration_status(
+    session: SessionDep,
+    actor: User = Depends(require_student),
+) -> list[RegistrationRowOut]:
+    rows = await service_m10b.get_student_registration_status(
+        session, student=actor
+    )
+    return [RegistrationRowOut.model_validate(r) for r in rows]
 
 
 # Public re-export so main.py can wire all three with one symbol.
