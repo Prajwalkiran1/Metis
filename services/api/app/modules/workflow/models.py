@@ -272,6 +272,40 @@ class CourseRegistration(Base, TimestampedMixin, SoftDeleteMixin):
     )
 
 
+# ── course_registration_preferences (audit Session 4 — ranked prefs) ────────
+class CourseRegistrationPreference(Base, TimestampedMixin, SoftDeleteMixin):
+    """A student's ranked preference (1st/2nd/3rd) for an elective option.
+
+    Sibling of CourseRegistration: the latter is the committed seat, this
+    table is the intent / fallback chain. On dissolution, the cascade reads
+    these rows in rank order to decide where each affected student lands.
+
+    Invariants (enforced by partial unique indexes from migration 0014):
+      - rank 1..3 unique within (student, semester_setup, elective_group)
+      - the same option cannot appear at two ranks within one group
+    """
+
+    __tablename__ = "course_registration_preferences"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=new_uuid)
+    college_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("colleges.id"), nullable=False
+    )
+    semester_setup_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("semester_setups.id"), nullable=False
+    )
+    student_user_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    elective_group_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("elective_groups.id"), nullable=False
+    )
+    elective_group_option_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("elective_group_options.id"), nullable=False
+    )
+    preference_rank: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+
+
 # ── lab_batches + lab_batch_members (the cascade touches the member rows) ──
 class LabBatch(Base, TimestampedMixin, SoftDeleteMixin):
     __tablename__ = "lab_batches"
