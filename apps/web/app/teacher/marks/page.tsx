@@ -1,6 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 import { api, ApiError, type Page as ApiPage } from "@/lib/api";
 import {
@@ -587,6 +596,12 @@ export default function TeacherMarksPage() {
             </Table>
           </Card>
 
+          <DistributionChart
+            roster={roster}
+            draftMarks={draftMarks}
+            maxMarks={Number(selectedAssessment?.max_marks ?? "0")}
+          />
+
           <Card className="p-4">
             <h2 className="mb-3 text-sm font-medium text-zinc-900">CSV bulk upload</h2>
             <p className="mb-3 text-xs text-zinc-500">
@@ -784,5 +799,94 @@ export default function TeacherMarksPage() {
         )}
       </Dialog>
     </div>
+  );
+}
+
+// ── Audit Session 6 — distribution histogram for the selected assessment ──
+function DistributionChart({
+  roster,
+  draftMarks,
+  maxMarks,
+}: {
+  roster: RosterRow[];
+  draftMarks: Record<string, { value: string; absent: boolean }>;
+  maxMarks: number;
+}) {
+  const data = useMemo(() => {
+    if (!maxMarks || maxMarks <= 0) return [];
+    // 10 evenly-sized bins on [0, maxMarks]. The top bin is inclusive of
+    // the upper bound so a perfect score lands in bin 9, not in an
+    // out-of-range slot.
+    const binCount = 10;
+    const width = maxMarks / binCount;
+    const bins = Array.from({ length: binCount }, (_, i) => ({
+      label: `${Math.round(i * width)}-${Math.round((i + 1) * width)}`,
+      count: 0,
+    }));
+    let entered = 0;
+    let absent = 0;
+    for (const r of roster) {
+      const draft = draftMarks[r.student_user_id];
+      const isAbsent = draft ? draft.absent : r.is_absent;
+      if (isAbsent) {
+        absent += 1;
+        continue;
+      }
+      const raw = draft?.value ?? r.marks_obtained;
+      if (raw === null || raw === "" || raw === undefined) continue;
+      const v = Number(raw);
+      if (!Number.isFinite(v)) continue;
+      let idx = Math.floor(v / width);
+      if (idx >= binCount) idx = binCount - 1;
+      if (idx < 0) idx = 0;
+      bins[idx].count += 1;
+      entered += 1;
+    }
+    return { bins, entered, absent };
+  }, [roster, draftMarks, maxMarks]);
+
+  if (!data || (data as { entered?: number }).entered === undefined) {
+    return null;
+  }
+  const { bins, entered, absent } = data as {
+    bins: { label: string; count: number }[];
+    entered: number;
+    absent: number;
+  };
+  if (entered === 0) {
+    return (
+      <Card className="p-4">
+        <h2 className="mb-2 text-sm font-medium text-zinc-900">
+          Marks distribution
+        </h2>
+        <p className="text-xs text-zinc-500">
+          No marks entered yet. The histogram lights up once you start
+          entering or absent-flagging students.
+        </p>
+      </Card>
+    );
+  }
+  return (
+    <Card className="p-4">
+      <div className="mb-2 flex items-baseline justify-between">
+        <h2 className="text-sm font-medium text-zinc-900">
+          Marks distribution
+        </h2>
+        <span className="text-xs text-zinc-500">
+          {entered} entered · {absent} absent · out of {maxMarks}
+        </span>
+      </div>
+      <div className="h-56">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={bins}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" />
+            <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+            <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+            <Tooltip />
+            <Bar dataKey="count" fill="#18181b" />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </Card>
   );
 }
