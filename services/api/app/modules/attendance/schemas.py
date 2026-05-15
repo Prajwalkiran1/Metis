@@ -160,3 +160,27 @@ class AttendanceReport(BaseModel):
     to_date: date | None
     generated_at: datetime
     rows: list[AttendanceReportRow]
+
+
+# ── Audit Session 5 — student eligibility summary ───────────────────────────
+class CourseEligibility(BaseModel):
+    """One subject's snapshot. Mirrors `compute_subject_eligibility`'s
+    return shape so future engine changes flow through without churn.
+    """
+
+    course_offering_id: UUID
+    course_code: str
+    course_title: str
+    course_type: str
+    attendance_percent: float
+    cie_percent: float | None = None
+    attendance_eligible: bool  # ≥85% attendance — drives SEE qualification
+    cie_eligible: bool  # ≥40% CIE marks — drives main SEE qualification
+    overall_eligible: bool
+    reason: str | None = None
+
+
+class EligibilitySummary(BaseModel):
+    academic_term_id: UUID | None = None
+    academic_term_code: str | None = None
+    courses: list[CourseEligibility] = []

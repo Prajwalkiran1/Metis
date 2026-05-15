@@ -1128,3 +1128,89 @@ async def generate_report(
         generated_at=utcnow(),
         rows=rows,
     )
+
+
+# ── Audit Session 5 — student-facing eligibility summary ────────────────────
+async def get_student_eligibility_summary(
+    session: AsyncSession,
+    *,
+    student: User,
+    term_id: UUID | None = None,
+) -> dict[str, Any]:
+    """Return per-course attendance + CIE eligibility for the student's
+    current (or specified) academic term.
+
+    Pulls the student's active enrollment for the term, looks up the
+    offerings under their section, and delegates each subject's
+    threshold computation to `workflow.service_m10e.compute_subject_eligibility`.
+
+    Cross-module import: attendance → workflow.service_m10e (one function).
+    The eligibility engine is single-source-of-truth; this aggregator just
+    composes it across the student's subjects.
+    """
+    _require_student(student)
+    # Local import — avoids the cross-module symbol resolving at startup.
+    from app.modules.academic.models import AcademicTerm
+    from app.modules.workflow.service_m10e import (
+        compute_subject_eligibility,
+    )
+
+    # Pick the active enrollment. If term_id is given, target it; otherwise
+    # use the student's most-recent active enrollment.
+    if term_id is not None:
+        enrollment_q = await session.execute(
+            select(Enrollment).where(
+                Enrollment.college_id == student.college_id,
+                Enrollment.student_user_id == student.id,
+                Enrollment.academic_term_id == term_id,
+                Enrollment.withdrawn_at.is_(None),
+            )
+        )
+        enrollment = enrollment_q.scalars().first()
+    else:
+        enrollment_q = await session.execute(
+            select(Enrollment)
+            .where(
+                Enrollment.college_id == student.college_id,
+                Enrollment.student_user_id == student.id,
+                Enrollment.withdrawn_at.is_(None),
+            )
+            .order_by(Enrollment.enrolled_at.desc())
+        )
+        enrollment = enrollment_q.scalars().first()
+
+    if enrollment is None:
+        return {
+            "academic_term_id": None,
+            "academic_term_code": None,
+            "courses": [],
+        }
+
+    term = await session.get(AcademicTerm, enrollment.academic_term_id)
+
+    offerings_q = await session.execute(
+        select(CourseOffering).where(
+            CourseOffering.college_id == student.college_id,
+            CourseOffering.section_id == enrollment.section_id,
+            CourseOffering.academic_term_id == enrollment.academic_term_id,
+            CourseOffering.deleted_at.is_(None),
+        )
+    )
+    offerings = list(offerings_q.scalars().all())
+
+    courses: list[dict[str, Any]] = []
+    for offering in offerings:
+        elig = await compute_subject_eligibility(
+            session,
+            student_user_id=student.id,
+            course_offering_id=offering.id,
+        )
+        courses.append(elig)
+
+    # Stable ordering: course_code asc.
+    courses.sort(key=lambda c: c.get("course_code") or "")
+    return {
+        "academic_term_id": enrollment.academic_term_id,
+        "academic_term_code": term.code if term else None,
+        "courses": courses,
+    }

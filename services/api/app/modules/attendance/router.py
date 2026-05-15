@@ -26,6 +26,7 @@ from app.core.deps import (
     CurrentUser,
     get_client_ip,
     get_user_agent,
+    require_student,
     require_teacher_or_admin,
 )
 from app.core.ratelimit import attendance_submit_rate_limit, limiter
@@ -36,6 +37,7 @@ from app.modules.attendance.schemas import (
     AttendanceReport,
     AttendanceSubmit,
     ClassSessionOut,
+    EligibilitySummary,
     OverrideOut,
     OverrideRequest,
     QRTokenOut,
@@ -202,6 +204,28 @@ async def override_attendance_for_session(
     except service.AttendanceError as e:
         raise _to_http(e) from e
     return OverrideOut.model_validate(ov)
+
+
+# ── Audit Session 5 — student eligibility summary ──────────────────────────
+@router.get("/attendance/me/eligibility-summary", response_model=EligibilitySummary)
+async def my_eligibility_summary(
+    session: SessionDep,
+    actor: User = Depends(require_student),
+    term_id: UUID | None = Query(None),
+) -> EligibilitySummary:
+    """Per-course attendance + CIE eligibility for the calling student.
+
+    Defaults to the student's most-recent active term; pass `term_id` to
+    pin a specific past term. Read-only — pure aggregation over
+    `workflow.service_m10e.compute_subject_eligibility`.
+    """
+    try:
+        out = await service.get_student_eligibility_summary(
+            session, student=actor, term_id=term_id
+        )
+    except service.AttendanceError as e:
+        raise _to_http(e) from e
+    return EligibilitySummary.model_validate(out)
 
 
 # ── Report ──────────────────────────────────────────────────────────────────
