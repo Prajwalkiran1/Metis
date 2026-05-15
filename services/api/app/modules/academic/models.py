@@ -30,7 +30,7 @@ from sqlalchemy import (
     Time,
     text,
 )
-from sqlalchemy.dialects.postgresql import UUID as PgUUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base, SoftDeleteMixin, TimestampedMixin, new_uuid
@@ -66,6 +66,21 @@ class AcademicCalendarKind(str, enum.Enum):
     event = "event"
     term_start = "term_start"
     term_end = "term_end"
+
+
+class TermType(str, enum.Enum):
+    regular = "regular"
+    fast_track = "fast_track"
+
+
+class AssessmentComponentKind(str, enum.Enum):
+    cie = "cie"
+    aat = "aat"
+    lab = "lab"
+    assignment = "assignment"
+    see = "see"
+    nptel_assignment = "nptel_assignment"
+    nptel_final = "nptel_final"
 
 
 # ── departments ──────────────────────────────────────────────────────────────
@@ -248,8 +263,18 @@ class CourseOffering(Base, TimestampedMixin, SoftDeleteMixin):
         PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
     academic_term: Mapped[str] = mapped_column(String(20), nullable=False)
+    academic_term_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("academic_terms.id"), nullable=True
+    )
     semester: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # M2 rework — integrated theory↔lab pairing + per-offering assessment scheme.
+    parent_offering_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("course_offerings.id"), nullable=True
+    )
+    assessment_scheme_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("assessment_schemes.id"), nullable=True
+    )
 
     __table_args__ = (
         Index(
@@ -450,4 +475,124 @@ class Enrollment(Base):
             postgresql_where=text("withdrawn_at IS NULL"),
         ),
         Index("ix_enrollments_student_term", "student_user_id", "academic_term"),
+    )
+
+
+# ── academic_terms (M2 rework — canonical term entity) ──────────────────────
+class AcademicTerm(Base, TimestampedMixin, SoftDeleteMixin):
+    """Canonical academic term. Legacy VARCHAR `academic_term` columns on
+    course_offerings and enrollments still live, but new code should join
+    by `academic_term_id` against this table.
+    """
+
+    __tablename__ = "academic_terms"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=new_uuid)
+    college_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("colleges.id"), nullable=False, index=True
+    )
+    code: Mapped[str] = mapped_column(String(20), nullable=False)
+    term_type: Mapped[TermType] = mapped_column(
+        Enum(TermType, name="term_type", native_enum=True, create_type=False),
+        nullable=False,
+        default=TermType.regular,
+    )
+    starts_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    ends_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    registration_opens_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    registration_closes_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_academic_terms_college_code_active",
+            "college_id",
+            "code",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+
+# ── assessment_scheme_templates (institutional/dept catalog) ────────────────
+class AssessmentSchemeTemplate(Base, TimestampedMixin, SoftDeleteMixin):
+    __tablename__ = "assessment_scheme_templates"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=new_uuid)
+    college_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("colleges.id"), nullable=False, index=True
+    )
+    owner_department_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("departments.id"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
+    applies_to_course_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    validation_rules: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    default_components: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+# ── assessment_schemes (per-offering instance) ───────────────────────────────
+class AssessmentScheme(Base, TimestampedMixin, SoftDeleteMixin):
+    __tablename__ = "assessment_schemes"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=new_uuid)
+    college_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("colleges.id"), nullable=False, index=True
+    )
+    course_offering_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("course_offerings.id"), nullable=False
+    )
+    template_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("assessment_scheme_templates.id"), nullable=True
+    )
+    configured_by_user_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    is_locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    locked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    locked_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+# ── assessment_scheme_components (rows under a scheme) ───────────────────────
+class AssessmentSchemeComponent(Base, TimestampedMixin, SoftDeleteMixin):
+    __tablename__ = "assessment_scheme_components"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=new_uuid)
+    college_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("colleges.id"), nullable=False, index=True
+    )
+    assessment_scheme_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("assessment_schemes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[AssessmentComponentKind] = mapped_column(
+        Enum(
+            AssessmentComponentKind,
+            name="assessment_component_kind",
+            native_enum=True,
+            create_type=False,
+        ),
+        nullable=False,
+    )
+    label: Mapped[str] = mapped_column(String(50), nullable=False)
+    max_marks: Mapped[Decimal] = mapped_column(Numeric(6, 2), nullable=False)
+    weight_percent: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False)
+    ordinal: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
+    is_dropped_in_best_of: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    metadata_json: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
