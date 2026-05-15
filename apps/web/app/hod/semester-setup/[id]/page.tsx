@@ -483,7 +483,25 @@ export default function SemesterSetupEditorPage({
                       : "—"}
                   </Td>
                   <Td className="text-zinc-500">
-                    {c.assessment_scheme_id ? "linked" : "—"}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span>{c.assessment_scheme_id ? "linked" : "—"}</span>
+                      <a
+                        className="text-xs text-zinc-900 underline"
+                        href={`/teacher/courses/${c.id}/scheme`}
+                      >
+                        Configure →
+                      </a>
+                      {(c.course_type === "integrated" ||
+                        c.course_type === "lab") &&
+                      c.parent_offering_id === null ? (
+                        <a
+                          className="text-xs text-zinc-900 underline"
+                          href={`/hod/lab-batches`}
+                        >
+                          Lab batches →
+                        </a>
+                      ) : null}
+                    </div>
                   </Td>
                   {editable ? (
                     <Td>

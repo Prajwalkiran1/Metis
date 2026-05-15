@@ -383,12 +383,28 @@ export default function HodElectivesPage() {
 
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-lg font-semibold text-zinc-900">Electives</h1>
-        <p className="text-sm text-zinc-500">
-          Set registration windows, watch enrolment, dissolve under-subscribed
-          options, redistribute when an option is over capacity.
-        </p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-lg font-semibold text-zinc-900">Electives</h1>
+          <p className="text-sm text-zinc-500">
+            Set registration windows, watch enrolment, dissolve under-subscribed
+            options, redistribute when an option is over capacity.
+          </p>
+        </div>
+        <div className="flex gap-2 text-sm">
+          <a
+            href="/hod/lab-batches"
+            className="text-zinc-700 underline hover:text-zinc-900"
+          >
+            Lab batches →
+          </a>
+          <a
+            href="/hod/scheme-templates"
+            className="text-zinc-700 underline hover:text-zinc-900"
+          >
+            Scheme templates →
+          </a>
+        </div>
       </div>
 
       <Card className="p-3">

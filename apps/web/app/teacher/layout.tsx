@@ -11,6 +11,7 @@ import { logout } from "@/lib/api";
 const NAV = [
   { href: "/teacher/attendance", label: "Attendance" },
   { href: "/teacher/marks", label: "Marks" },
+  { href: "/teacher/tasks", label: "Tasks" },
   // Stubs for future teacher-side modules.
   { href: "/teacher/materials", label: "Materials", disabled: true },
 ];
@@ -27,7 +28,10 @@ export default function TeacherLayout({ children }: { children: ReactNode }) {
       return;
     }
     const role = getRole();
-    if (role !== "teacher" && role !== "admin") {
+    // HODs follow links here from /hod/electives to configure schemes on
+    // offerings they don't necessarily teach. Admins see the same panels
+    // read-only.
+    if (role !== "teacher" && role !== "admin" && role !== "hod") {
       router.replace("/login");
       return;
     }

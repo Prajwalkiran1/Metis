@@ -32,14 +32,39 @@ type HodDashboard = {
   };
 };
 
+type SchemeReadinessOffering = {
+  course_offering_id: string;
+  course_code: string;
+  course_title: string;
+  course_type: "theory" | "lab" | "integrated" | "nptel";
+  section_name: string;
+  is_locked: boolean;
+  has_scheme: boolean;
+  aat_total_percent: number;
+};
+
+type SchemeReadiness = {
+  total_offerings: number;
+  with_scheme: number;
+  locked: number;
+  unlocked: number;
+  offerings: SchemeReadinessOffering[];
+};
+
 export default function HodDashboardPage() {
   const [data, setData] = useState<HodDashboard | null>(null);
+  const [readiness, setReadiness] = useState<SchemeReadiness | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
       try {
-        setData(await api<HodDashboard>("/hod/dashboard"));
+        const [dash, r] = await Promise.all([
+          api<HodDashboard>("/hod/dashboard"),
+          api<SchemeReadiness>("/hod/scheme-readiness").catch(() => null),
+        ]);
+        setData(dash);
+        setReadiness(r);
       } catch (e) {
         setErr(e instanceof ApiError ? e.message : "load failed");
       }
@@ -109,11 +134,110 @@ export default function HodDashboardPage() {
         )}
         <p className="mt-4 text-sm text-zinc-600">{data.placeholder.message}</p>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-zinc-500">
-          <li>Lab batches + assessment scheme picker — M10c</li>
           <li>CIE schedule + tasks + internal deadlines — M10d</li>
           <li>Hall tickets + grade cards + SEE/re-eval/makeup — M10e</li>
         </ul>
       </Card>
+
+      {readiness ? (
+        <Card className="p-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-zinc-900">
+              Scheme readiness
+            </h2>
+            <a
+              href="/hod/scheme-templates"
+              className="text-xs text-zinc-700 underline"
+            >
+              Templates
+            </a>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-3 text-xs text-zinc-700">
+            <span>{readiness.total_offerings} offerings</span>
+            <span>
+              <Badge
+                tone={
+                  readiness.with_scheme === readiness.total_offerings
+                    ? "green"
+                    : "amber"
+                }
+              >
+                {readiness.with_scheme} with scheme
+              </Badge>
+            </span>
+            <span>
+              <Badge tone="neutral">{readiness.locked} locked</Badge>
+            </span>
+            <span>
+              <Badge
+                tone={readiness.unlocked > 0 ? "amber" : "green"}
+              >
+                {readiness.unlocked} open
+              </Badge>
+            </span>
+          </div>
+          {readiness.offerings.some(
+            (o) => !o.has_scheme || (!o.is_locked && o.has_scheme),
+          ) ? (
+            <div className="mt-3 overflow-x-auto">
+              <Table>
+                <thead>
+                  <tr>
+                    <Th>Course</Th>
+                    <Th>Type</Th>
+                    <Th>Section</Th>
+                    <Th>AAT %</Th>
+                    <Th>State</Th>
+                    <Th></Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {readiness.offerings
+                    .filter((o) => !o.has_scheme || !o.is_locked)
+                    .map((o) => (
+                      <tr key={o.course_offering_id}>
+                        <Td>
+                          <div className="font-medium">{o.course_code}</div>
+                          <div className="text-xs text-zinc-500">
+                            {o.course_title}
+                          </div>
+                        </Td>
+                        <Td>
+                          <Badge tone="neutral">{o.course_type}</Badge>
+                        </Td>
+                        <Td>{o.section_name}</Td>
+                        <Td>
+                          {o.has_scheme
+                            ? o.aat_total_percent.toFixed(1)
+                            : "—"}
+                        </Td>
+                        <Td>
+                          {!o.has_scheme ? (
+                            <Badge tone="red">no scheme</Badge>
+                          ) : (
+                            <Badge tone="amber">open</Badge>
+                          )}
+                        </Td>
+                        <Td>
+                          <a
+                            href={`/teacher/courses/${o.course_offering_id}/scheme`}
+                            className="text-xs text-zinc-900 underline"
+                          >
+                            Configure →
+                          </a>
+                        </Td>
+                      </tr>
+                    ))}
+                </tbody>
+              </Table>
+            </div>
+          ) : (
+            <p className="mt-3 text-xs text-zinc-500">
+              All offerings have locked schemes — marks entry is ready.
+            </p>
+          )}
+        </Card>
+      ) : null}
 
       {data.electives_summary &&
       data.electives_summary.under_subscribed_count > 0 ? (
