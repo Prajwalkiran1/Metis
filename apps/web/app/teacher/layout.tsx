@@ -10,6 +10,7 @@ import { logout } from "@/lib/api";
 import { RoleBadge } from "@/components/RoleBadge";
 
 const NAV = [
+  { href: "/teacher/dashboard", label: "Dashboard" },
   { href: "/teacher/attendance", label: "Attendance" },
   { href: "/teacher/marks", label: "Marks" },
   { href: "/teacher/tasks", label: "Tasks" },
