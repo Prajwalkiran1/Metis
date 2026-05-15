@@ -394,13 +394,13 @@ metis/
 | Module | Status | Skeleton Live? | Features Done | Blocked By |
 |---|---|---|---|---|
 | M1 User Service | 🟢 Complete | Yes | All endpoints + auth + RBAC + Google OAuth + invite flow + (M2 rework) HOD role + bulk-CSV + /users list + /users/{id}/status | — |
-| M2 Academic Service | 🟡 Rework shipped, pending DB apply | Yes (v1 + 22 new tables in 0007–0009) | M2 rework: USN backfill, HOD role + canonical link, academic_terms, semester_setups, elective_groups, lab_batches, schemes (per-offering + 3 institutional templates), NPTEL, internal_deadlines, cie_schedule, tasks, hall_tickets, grade_cards, see_results, re_evaluations, academic_overrides, eligibility_snapshots, course_drops. **Migrations not yet applied — bring up Postgres and run `alembic upgrade head`.** | DB apply |
+| M2 Academic Service | 🟢 Rework complete | Yes (v1 + 22 new tables in 0007–0009, applied) | M2 rework: USN backfill, HOD role + canonical link, academic_terms, semester_setups, elective_groups, lab_batches, schemes (per-offering + 3 institutional templates), NPTEL, internal_deadlines, cie_schedule, tasks, hall_tickets, grade_cards, see_results, re_evaluations, academic_overrides, eligibility_snapshots, course_drops. **Migrations 0007–0010 applied locally and verified.** | — |
 | M3 Attendance Service | 🟠 Rework pending | Yes (v1) | v1 shipped; rework adds: eligibility engine, 60%/85% thresholds, deadline freeze integration | M2 rework |
 | M4 Marks Service | 🟠 Rework pending | Yes (v1) | v1 shipped; rework adds: scheme integration, NPTEL grading, SEE versioning, grade cards, re-eval, makeup | M2 rework, M10 |
 | M5 Comms Service | 🔴 Not started | No | — | M1, M2 rework, M10 event bus |
 | M6 Content Service | 🔴 Not started | No | — | M1, M2 rework |
 | M9 Admin Portal + Analytics | 🔴 Not started | No | — | All others |
-| M10 Academic Workflow | 🔴 Not started | No | NEW MODULE — HOD flows, electives, lab batches, schemes, CIE scheduling, internal deadlines, hall tickets, grade cards, tasks, SEE/re-eval/makeup, event bus | M2 rework |
+| M10 Academic Workflow | 🟡 M10a shipped | Yes (workflow module live) | M10a: SemesterSetup CRUD, course assignment with auto-scheme-link, elective groups+options, self-publish (draft→active), event bus publisher stub, admin_notifications feed, HOD pages + admin notifications page. **M10b–e pending.** | — (for M10b) |
 | M11 Assignments | 🔴 Not started | No | NEW MODULE — assignments, portal+offline modes, AAT linkage, parent visibility | M2 rework, M10, M6 |
 | M7 Learning Engine | ⚫ Deferred | No (scaffold) | AI layer — built last; integration points ready | scaffold exists |
 | M8 Insights + Face Verify | ⚫ Deferred | No (scaffold) | AI layer — built last; M3 face-verify stub swappable | scaffold exists |
@@ -516,14 +516,23 @@ git log -1 --format='%B'         # should NOT contain "Co-Authored-By: Claude" o
 
 ```yaml
 last_updated: "2026-05-15"
-active_module: M2_rework_shipped_pending_db_apply
+active_module: M10a_shipped
 
-# IMPORTANT for the next session: migrations 0007/0008/0009 were written
-# but NOT applied during this session (Postgres + docker were offline on
-# the dev machine). Before any further work, bring up infra/docker and
-# run `alembic upgrade head` + the SQL files under
-# services/api/alembic/verify/. Tests in tests/test_m2_rework.py will
-# only pass against a DB that has the rework migrations applied.
+# IMPORTANT for the next session: M2 rework migrations 0007/0008/0009 are
+# applied on the local dev DB (head is now 0010 after M10a). The full
+# pytest suite passes (86 tests). Next session is M10b (elective
+# registration + dissolution + cascade). Boot order remains:
+# `docker compose -f infra/docker/docker-compose.yml up -d` then
+# `cd services/api && uv run alembic upgrade head` to be safe.
+#
+# Pre-existing seed bug to flag (not M10a-caused): infra/scripts/seed.py
+# can insert duplicate academic_calendar rows for 2026-08-15 when
+# previous runs left them un-deduped. Dedupe before re-running:
+#   docker exec metis_postgres psql -U metis -d metis -c "
+#     DELETE FROM academic_calendar WHERE id IN (
+#       SELECT id FROM academic_calendar
+#       WHERE entry_date = '2026-08-15' AND deleted_at IS NULL OFFSET 1
+#     );"
 
 module_states:
 
@@ -545,7 +554,7 @@ module_states:
       - "FACE_ENROLLMENT_MIN_AGE not enforced"
 
   M2_academic_service:
-    status: rework_shipped_pending_db_apply
+    status: rework_complete
     skeleton_live: true
     v1_shipped: "see CLAUDE-v1-archive.md — 10 tables, all endpoints, admin /admin/academic six-tab page"
     migrations_written:
@@ -570,7 +579,11 @@ module_states:
       - "grade_rules table (pivoted into assessment_schemes/components; reader removed in M4 rework)"
       - "course_offerings.academic_term VARCHAR(20) (use academic_term_id)"
     blocked_by: none
-    next_session_picks_up_at: "Apply migrations + verify, then M10a (Semester Setup + HOD Approval)"
+    next_session_picks_up_at: "M2 rework done. Next is M10b (elective registration + dissolution + cascade)."
+    m10a_followups_added_this_session:
+      - "ORM backfill: AcademicTerm, AssessmentSchemeTemplate, AssessmentScheme, AssessmentSchemeComponent now in academic/models.py. CourseOffering ORM extended with parent_offering_id / academic_term_id / assessment_scheme_id (columns already lived in 0007)."
+      - "GET /academic-terms (read-only, college-scoped) added so the HOD setup picker can populate term options before an admin terms-CRUD page exists."
+      - "Seed adds hod@bmsce.ac.in (linked to CSE) with the demo password."
 
   M3_attendance_service:
     status: rework_pending
@@ -605,17 +618,49 @@ module_states:
     next_session_picks_up_at: "After M10"
 
   M10_academic_workflow:
-    status: not_started
-    skeleton_live: false
+    status: m10a_shipped
+    skeleton_live: true
     scope: "NEW MODULE — see docs/modules/M10.md"
     sub_sessions:
-      a: "Semester Setup + Approval (HOD draft, self-publish, admin notification feed)"
+      a: "✅ shipped — Semester Setup CRUD + self-publish (HOD draft → published → active in one transaction); admin_notifications feed; HOD pages + admin notifications page; event bus publisher stub with stable payload contract"
       b: "Elective Registration + Dissolution + Cascade"
       c: "Lab Batches + Assessment Scheme Templates + per-offering picker"
-      d: "CIE Scheduling + Tasks + Internal Deadlines + Event Bus (Redis pub/sub)"
+      d: "CIE Scheduling + Tasks + Internal Deadlines + Event Bus (Redis pub/sub, real subscriber side)"
       e: "Hall Tickets + Grade Cards + SEE/Re-eval/Makeup workflows"
-    blocked_by: M2_rework
-    next_session_picks_up_at: "After M2 rework"
+    m10a_shipped:
+      schema:
+        - "Migration 0010 — admin_notifications (id, college_id, event_type, payload jsonb, created_at, read_at). Index (college_id, created_at DESC)."
+        - "Verify SQL at services/api/alembic/verify/verify_0010.sql"
+      backend:
+        - "services/api/app/modules/workflow/models.py — SemesterSetup, ElectiveGroup, ElectiveGroupOption, AdminNotification"
+        - "services/api/app/modules/workflow/schemas.py — Pydantic in/out shapes incl. SemesterSetupDetail (with denormalised display fields)"
+        - "services/api/app/modules/workflow/service.py — create/list/get/patch/delete setup, add/patch/remove course (auto-scheme-link idempotent), elective groups+options CRUD, publish (draft→active in one tx with admin_notifications row), list_admin_notifications"
+        - "services/api/app/modules/workflow/router.py — split into hod_router (/hod/dashboard), workflow_router (/workflow/semester-setups/*), admin_notifications_router (/admin/notifications)"
+        - "services/api/app/core/event_bus.py — best-effort publish() (structured log + Redis PUBLISH best-effort, never raises). Payload shape matches AI_DEFERRAL_PLAN.md."
+        - "services/api/app/modules/academic/router.py — GET /academic-terms read-only"
+      ui:
+        - "/hod/semester-setup — index page (list by term, gated New-setup button)"
+        - "/hod/semester-setup/[id] — full editor with notes autosave, course add/remove (type badges, integrated parent dropdown when course_type=lab), elective group + option CRUD, publish confirmation dialog. Read-only after publish."
+        - "/hod/dashboard — surfaces current-term setup state (link to editor)"
+        - "/admin/notifications — sortable table feed with department + event-type filters"
+        - "/hod/layout.tsx — Semester setup nav link enabled. /admin/layout.tsx — Notifications nav link added"
+      tests: "services/api/tests/test_m10a.py — 12 tests covering critical paths (HOD create-draft / cross-dept blocked / duplicate blocked / publish state transition / read-only-after-publish / publish validation / admin-read-only / admin notifications populated on publish / teacher write blocked / cross-department course assignment / idempotent scheme link / event payload shape)"
+      seed: "infra/scripts/seed.py — hod@bmsce.ac.in (CSE HOD) created idempotently, password = MetisDemo!2026"
+      authority_choices:
+        - "Publish state: draft → active in one transaction (published timestamp recorded). 'published' state retained for the enum but the flow skips dwelling there per the build plan: HODs publish after the term is live."
+        - "Auto-scheme-link: on course add, finds the institutional template matching the course_type (theory→Theory Standard, lab→Theory Standard, integrated→Integrated Standard, nptel→NPTEL Standard) and instantiates an AssessmentScheme + components row-set. Idempotent — service short-circuits if assessment_scheme_id is already non-null."
+        - "RBAC: workflow writes require require_hod (admins blocked from writing per CLAUDE.md authority table). Admin can list and read setup details for oversight. /admin/notifications is admin-only."
+        - "Admin notifications feed is sourced from a dedicated table, not from semester_setups, so M5 can wire mark-as-read without leaking state columns into the setup row."
+        - "Event publisher logs + best-effort Redis PUBLISH. M10d swaps Redis to required-Redis with retry. Signature is stable."
+      deferred_to_m10b_or_later:
+        - "Student-facing elective registration UI (M10b)"
+        - "Elective dissolution + student migration cascade (M10b)"
+        - "Lab batch composition (M10c)"
+        - "HOD-side assessment scheme picker (M10c) — for now M10a auto-links the institutional template"
+        - "CIE scheduling + tasks + internal deadlines (M10d)"
+        - "Hall tickets + grade cards + SEE/re-eval/makeup (M10e)"
+    blocked_by: none
+    next_session_picks_up_at: "M10b — Elective Registration + Dissolution + Cascade"
 
   M11_assignments:
     status: not_started
@@ -670,6 +715,8 @@ frontend:
   parent_shell: true
   hod_shell: true   # shipped in M2 rework (placeholder dashboard only)
   admin_users_page: true   # shipped in M2 rework
+  hod_semester_setup_pages: true   # shipped in M10a (index + editor)
+  admin_notifications_page: true   # shipped in M10a
 
 infrastructure:
   supabase_project_created: false
