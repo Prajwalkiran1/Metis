@@ -105,10 +105,11 @@ from app.modules.workflow.schemas import (
     TaskOut,
     ManualMigrateRequest,
     ManualMigrateResponse,
+    CommittedView,
     Page,
-    RegistrationChoice,
     RegistrationRowOut,
     RegistrationWindowSet,
+    ResolveNeedsInterventionRequest,
     SchemeComponentPatch,
     SchemeLockRequest,
     SchemeOut,
@@ -809,17 +810,19 @@ async def get_elective_group_enrollment(
 async def dissolve_option_preview(
     eg_id: UUID,
     option_id: UUID,
-    payload: DissolveRequest,
+    payload: DissolveRequest,  # body is accepted but no longer carries target_option_id
     session: SessionDep,
     actor: User = Depends(require_hod),
 ) -> CascadeSummary:
+    # `payload` is read only for future fields (reason/evidence_url stay on
+    # the schema in case the HOD wants to attach context to the preview).
+    _ = payload
     try:
         d = await service_m10b.dissolve_option_preview(
             session,
             actor=actor,
             eg_id=eg_id,
             option_id=option_id,
-            target_option_id=payload.target_option_id,
         )
     except service.WorkflowError as e:
         raise _to_http(e) from e
@@ -838,16 +841,18 @@ async def dissolve_option(
     actor: User = Depends(require_hod),
 ) -> DissolveResponse:
     try:
-        summary, dissolved_payload, student_migrated_payloads = (
-            await service_m10b.dissolve_option(
-                session,
-                actor=actor,
-                eg_id=eg_id,
-                option_id=option_id,
-                target_option_id=payload.target_option_id,
-                reason=payload.reason,
-                evidence_url=payload.evidence_url,
-            )
+        (
+            summary,
+            dissolved_payload,
+            student_migrated_payloads,
+            intervention_payloads,
+        ) = await service_m10b.dissolve_option(
+            session,
+            actor=actor,
+            eg_id=eg_id,
+            option_id=option_id,
+            reason=payload.reason,
+            evidence_url=payload.evidence_url,
         )
     except service.WorkflowError as e:
         raise _to_http(e) from e
@@ -864,6 +869,13 @@ async def dissolve_option(
     for p in student_migrated_payloads:
         await publish_event(
             "student.migrated",
+            p,
+            college_id=actor.college_id,
+            actor_user_id=actor.id,
+        )
+    for p in intervention_payloads:
+        await publish_event(
+            "student.needs_intervention",
             p,
             college_id=actor.college_id,
             actor_user_id=actor.id,
@@ -943,6 +955,13 @@ async def cap_option_capacity(
             college_id=actor.college_id,
             actor_user_id=actor.id,
         )
+    for p in out.get("intervention_events", []):
+        await publish_event(
+            "student.needs_intervention",
+            p,
+            college_id=actor.college_id,
+            actor_user_id=actor.id,
+        )
     return CapResponse(
         new_max=out["new_max"],
         displaced=[DisplacedStudent.model_validate(d) for d in out.get("displaced", [])],
@@ -986,7 +1005,9 @@ async def student_submit_electives(
         rows = await service_m10b.submit_student_registration(
             session,
             student=actor,
-            choices=[(c.elective_group_id, c.elective_group_option_id) for c in payload.choices],
+            choices=[
+                (c.elective_group_id, c.ranked_option_ids) for c in payload.choices
+            ],
         )
     except service.WorkflowError as e:
         raise _to_http(e) from e
@@ -1004,6 +1025,85 @@ async def student_registration_status(
         session, student=actor
     )
     return [RegistrationRowOut.model_validate(r) for r in rows]
+
+
+# Audit Session 4 — closed-state unified view (B6 + B7).
+@student_registration_router.get("/committed", response_model=CommittedView)
+async def student_registration_committed(
+    session: SessionDep,
+    actor: User = Depends(require_student),
+) -> CommittedView:
+    try:
+        d = await service_m10b.get_committed_view(session, student=actor)
+    except service.WorkflowError as e:
+        raise _to_http(e) from e
+    return CommittedView.model_validate(d)
+
+
+# Audit Session 4 — HOD-facing needs_intervention queue + resolve endpoint.
+class NeedsInterventionEntry(BaseModel):
+    course_registration_id: UUID
+    student_user_id: UUID
+    student_name: str
+    student_usn: str | None = None
+    elective_group_id: UUID
+    elective_group_name: str
+    dissolved_course_code: str
+    dissolved_course_title: str
+    raised_at: Any
+
+
+@workflow_router.get(
+    "/needs-intervention",
+    response_model=list[NeedsInterventionEntry],
+)
+async def list_needs_intervention(
+    session: SessionDep,
+    actor: User = Depends(require_hod),
+) -> list[NeedsInterventionEntry]:
+    try:
+        rows = await service_m10b.list_dept_needs_intervention(
+            session, actor=actor
+        )
+    except service.WorkflowError as e:
+        raise _to_http(e) from e
+    return [NeedsInterventionEntry.model_validate(r) for r in rows]
+
+
+@workflow_router.post(
+    "/elective-groups/{eg_id}/resolve-needs-intervention",
+    response_model=ManualMigrateResponse,
+)
+async def resolve_needs_intervention(
+    eg_id: UUID,
+    payload: ResolveNeedsInterventionRequest,
+    session: SessionDep,
+    actor: User = Depends(require_hod),
+) -> ManualMigrateResponse:
+    try:
+        summary, event_payload = await service_m10b.resolve_needs_intervention(
+            session,
+            actor=actor,
+            eg_id=eg_id,
+            student_id=payload.student_id,
+            to_option_id=payload.to_option_id,
+            reason=payload.reason,
+        )
+    except service.WorkflowError as e:
+        raise _to_http(e) from e
+
+    from app.core.event_bus import publish as publish_event
+
+    event = await publish_event(
+        "student.migrated",
+        event_payload,
+        college_id=actor.college_id,
+        actor_user_id=actor.id,
+    )
+    return ManualMigrateResponse(
+        summary=CascadeSummary.model_validate(summary),
+        event=event,
+    )
 
 
 # ── M10c: lab batches ──────────────────────────────────────────────────────
