@@ -12,7 +12,7 @@ import { logout } from "@/lib/api";
 // this shell only ships the dashboard so the role is reachable.
 const NAV = [
   { href: "/hod/dashboard", label: "Dashboard" },
-  { href: "/hod/semester-setup", label: "Semester setup", disabled: true },
+  { href: "/hod/semester-setup", label: "Semester setup" },
   { href: "/hod/electives", label: "Electives", disabled: true },
   { href: "/hod/lab-batches", label: "Lab batches", disabled: true },
   { href: "/hod/cie-schedule", label: "CIE schedule", disabled: true },

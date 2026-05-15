@@ -16,6 +16,12 @@ type TeachingOffering = {
 type HodDashboard = {
   department: { id: string; code: string; name: string };
   teaching_offerings: TeachingOffering[];
+  current_term_setup: {
+    id: string;
+    academic_term_id: string;
+    state: "draft" | "published" | "active" | "archived";
+    published_at: string | null;
+  } | null;
   placeholder: {
     message: string;
     department_active_offerings: number;
@@ -55,14 +61,50 @@ export default function HodDashboardPage() {
       </div>
 
       <Card className="p-4">
-        <h2 className="mb-2 text-sm font-semibold text-zinc-900">
-          Department overview
-        </h2>
-        <p className="text-sm text-zinc-600">
-          {data.placeholder.message}
-        </p>
-        <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-zinc-500">
-          <li>Semester setup draft &amp; publish flow — M10a</li>
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-zinc-900">
+            Current semester setup
+          </h2>
+          <a
+            href="/hod/semester-setup"
+            className="text-xs text-zinc-700 underline"
+          >
+            Manage
+          </a>
+        </div>
+        {data.current_term_setup ? (
+          <div className="mt-2 space-y-1">
+            <div className="flex items-center gap-2 text-sm">
+              <Badge>{data.current_term_setup.state}</Badge>
+              <a
+                className="text-zinc-900 underline"
+                href={`/hod/semester-setup/${data.current_term_setup.id}`}
+              >
+                Open
+              </a>
+            </div>
+            {data.current_term_setup.published_at ? (
+              <p className="text-xs text-zinc-500">
+                Published{" "}
+                {new Date(
+                  data.current_term_setup.published_at,
+                ).toLocaleString()}
+              </p>
+            ) : (
+              <p className="text-xs text-zinc-500">Not yet published.</p>
+            )}
+          </div>
+        ) : (
+          <p className="mt-2 text-sm text-zinc-600">
+            No setup for this department yet — start one from{" "}
+            <a className="underline" href="/hod/semester-setup">
+              Semester setup
+            </a>
+            .
+          </p>
+        )}
+        <p className="mt-4 text-sm text-zinc-600">{data.placeholder.message}</p>
+        <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-zinc-500">
           <li>Elective registration + dissolution + cascade — M10b</li>
           <li>Lab batches + assessment scheme picker — M10c</li>
           <li>CIE schedule + tasks + internal deadlines — M10d</li>
