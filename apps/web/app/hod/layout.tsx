@@ -9,13 +9,13 @@ import { getAccessToken, getRole } from "@/lib/auth";
 import { logout } from "@/lib/api";
 import { RoleBadge } from "@/components/RoleBadge";
 
-// Most entries are intentionally disabled. M10 a-e sessions wire them up;
-// this shell only ships the dashboard so the role is reachable.
+// Audit Session 6 — /hod/electives and /hod/lab-batches removed from the
+// top-level sidebar. They stay alive as implementation pages, deep-linked
+// from /hod/semester-setup/[id] (the natural entry point per elective
+// group / integrated offering).
 const NAV = [
   { href: "/hod/dashboard", label: "Dashboard" },
   { href: "/hod/semester-setup", label: "Semester setup" },
-  { href: "/hod/electives", label: "Electives" },
-  { href: "/hod/lab-batches", label: "Lab batches" },
   { href: "/hod/scheme-templates", label: "Scheme templates" },
   { href: "/hod/cie-schedule", label: "CIE schedule" },
   { href: "/hod/tasks", label: "Tasks" },

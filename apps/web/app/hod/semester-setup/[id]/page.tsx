@@ -552,31 +552,39 @@ export default function SemesterSetupEditorPage() {
                         : ""}
                     </div>
                   </div>
-                  {editable ? (
-                    <div className="flex gap-2">
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => {
-                          addOptionForm.reset({
-                            course_id: "",
-                            tentative_teacher_id: "",
-                          });
-                          setOpenAddOption(eg.id);
-                        }}
-                      >
-                        Add option
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="danger"
-                        onClick={() => onDeleteEg(eg.id)}
-                        disabled={busy === `deleteEg:${eg.id}`}
-                      >
-                        Delete
-                      </Button>
-                    </div>
-                  ) : null}
+                  <div className="flex items-center gap-2">
+                    <a
+                      href="/hod/electives"
+                      className="text-xs text-zinc-700 underline"
+                    >
+                      Manage enrollment →
+                    </a>
+                    {editable ? (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => {
+                            addOptionForm.reset({
+                              course_id: "",
+                              tentative_teacher_id: "",
+                            });
+                            setOpenAddOption(eg.id);
+                          }}
+                        >
+                          Add option
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          onClick={() => onDeleteEg(eg.id)}
+                          disabled={busy === `deleteEg:${eg.id}`}
+                        >
+                          Delete
+                        </Button>
+                      </>
+                    ) : null}
+                  </div>
                 </div>
                 {eg.options.length === 0 ? (
                   <p className="px-3 py-3 text-sm text-zinc-500">
