@@ -1,9 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { ApiError, api } from "@/lib/api";
-import { Badge, Card, ErrorText, Loading, Table, Td, Th } from "@/components/ui";
+import {
+  Badge,
+  Card,
+  ErrorText,
+  Loading,
+  Table,
+  Tabs,
+  Td,
+  Th,
+} from "@/components/ui";
 
 type TeachingOffering = {
   id: string;
@@ -51,30 +60,74 @@ type SchemeReadiness = {
   offerings: SchemeReadinessOffering[];
 };
 
+type NeedsInterventionEntry = {
+  course_registration_id: string;
+  student_name: string;
+};
+
+// Pull the leading year out of an academic_term string like "2026-Odd"
+// or "2024-Even". Falls back to the literal string if no 4-digit prefix.
+function termYear(term: string): string {
+  const m = term.match(/^(\d{4})/);
+  return m ? m[1] : term;
+}
+
 export default function HodDashboardPage() {
   const [data, setData] = useState<HodDashboard | null>(null);
   const [readiness, setReadiness] = useState<SchemeReadiness | null>(null);
+  const [interventionCount, setInterventionCount] = useState<number>(0);
+  const [activeYear, setActiveYear] = useState<string>("");
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
       try {
-        const [dash, r] = await Promise.all([
+        const [dash, r, interv] = await Promise.all([
           api<HodDashboard>("/hod/dashboard"),
           api<SchemeReadiness>("/hod/scheme-readiness").catch(() => null),
+          api<NeedsInterventionEntry[]>(
+            "/workflow/needs-intervention",
+          ).catch(() => [] as NeedsInterventionEntry[]),
         ]);
         setData(dash);
         setReadiness(r);
+        setInterventionCount(interv.length);
       } catch (e) {
         setErr(e instanceof ApiError ? e.message : "load failed");
       }
     })();
   }, []);
 
+  // Group teaching offerings by extracted year. Stable order: descending year.
+  const offeringsByYear = useMemo(() => {
+    if (!data) return new Map<string, TeachingOffering[]>();
+    const m = new Map<string, TeachingOffering[]>();
+    for (const o of data.teaching_offerings) {
+      const y = termYear(o.academic_term);
+      if (!m.has(y)) m.set(y, []);
+      m.get(y)!.push(o);
+    }
+    return new Map(
+      [...m.entries()].sort((a, b) => b[0].localeCompare(a[0])),
+    );
+  }, [data]);
+
+  // Default the year tab to the latest year present.
+  useEffect(() => {
+    if (!activeYear && offeringsByYear.size > 0) {
+      setActiveYear([...offeringsByYear.keys()][0]);
+    }
+  }, [offeringsByYear, activeYear]);
+
   if (err) return <ErrorText>{err}</ErrorText>;
   if (!data) return <Loading />;
 
   const offerings = data.teaching_offerings;
+  const yearList = [...offeringsByYear.keys()];
+  const visible =
+    activeYear && offeringsByYear.has(activeYear)
+      ? offeringsByYear.get(activeYear)!
+      : offerings;
 
   return (
     <div className="space-y-5">
@@ -88,6 +141,29 @@ export default function HodDashboardPage() {
           term.
         </p>
       </div>
+
+      {interventionCount > 0 ? (
+        <Card className="border-red-300 bg-red-50 p-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-red-900">
+              {interventionCount} student
+              {interventionCount === 1 ? "" : "s"} need
+              {interventionCount === 1 ? "s" : ""} HOD attention
+            </h2>
+            <a
+              href="/hod/electives"
+              className="text-sm text-red-900 underline"
+            >
+              Resolve →
+            </a>
+          </div>
+          <p className="mt-1 text-xs text-red-900">
+            Elective slots whose preference chain was exhausted by a
+            dissolution. Pick a surviving option per student to clear the
+            queue.
+          </p>
+        </Card>
+      ) : null}
 
       <Card className="p-4">
         <div className="flex items-center justify-between">
@@ -278,29 +354,55 @@ export default function HodDashboardPage() {
             You are not teaching any active offerings this term.
           </p>
         ) : (
-          <Table>
-            <thead>
-              <tr>
-                <Th>Course</Th>
-                <Th>Section</Th>
-                <Th>Term</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {offerings.map((o) => (
-                <tr key={o.id}>
-                  <Td>
-                    <div className="font-medium">{o.course_code}</div>
-                    <div className="text-xs text-zinc-500">
-                      {o.course_title}
+          <>
+            {yearList.length > 1 ? (
+              <div className="px-4 pt-2">
+                <Tabs
+                  active={activeYear || yearList[0]}
+                  onChange={setActiveYear}
+                  tabs={yearList.map((y) => ({
+                    id: y,
+                    label: `${y} (${offeringsByYear.get(y)!.length})`,
+                  }))}
+                />
+              </div>
+            ) : null}
+            <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
+              {visible.map((o) => (
+                <div
+                  key={o.id}
+                  className="rounded border border-zinc-200 bg-white p-3"
+                >
+                  <div className="flex items-baseline justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate font-medium">{o.course_code}</div>
+                      <div className="truncate text-xs text-zinc-500">
+                        {o.course_title}
+                      </div>
                     </div>
-                  </Td>
-                  <Td>{o.section_name}</Td>
-                  <Td className="text-zinc-600">{o.academic_term}</Td>
-                </tr>
+                    <Badge tone="neutral">{o.section_name}</Badge>
+                  </div>
+                  <div className="mt-2 text-[11px] text-zinc-500">
+                    {o.academic_term}
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                    <a
+                      href={`/teacher/courses/${o.id}`}
+                      className="text-zinc-900 underline"
+                    >
+                      Open →
+                    </a>
+                    <a
+                      href={`/teacher/courses/${o.id}/scheme`}
+                      className="text-zinc-700 underline"
+                    >
+                      Scheme
+                    </a>
+                  </div>
+                </div>
               ))}
-            </tbody>
-          </Table>
+            </div>
+          </>
         )}
       </Card>
     </div>
