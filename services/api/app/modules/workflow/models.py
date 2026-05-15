@@ -606,6 +606,11 @@ class ReEvaluation(Base, TimestampedMixin, SoftDeleteMixin):
 
 
 class Task(Base, TimestampedMixin, SoftDeleteMixin):
+    """A task header — what's being asked + by whom + when due. Per-
+    assignee execution state lives in TaskAssignment rows; one task
+    can have N assignees (paper-setting committee, multi-invigilator
+    CIE, etc.)."""
+
     __tablename__ = "tasks"
 
     id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=new_uuid)
@@ -613,9 +618,6 @@ class Task(Base, TimestampedMixin, SoftDeleteMixin):
         PgUUID(as_uuid=True), ForeignKey("colleges.id"), nullable=False
     )
     assigned_by_user_id: Mapped[UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
-    )
-    assigned_to_user_id: Mapped[UUID] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
     task_type: Mapped[TaskType] = mapped_column(
@@ -637,6 +639,25 @@ class Task(Base, TimestampedMixin, SoftDeleteMixin):
     )
     due_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+
+class TaskAssignment(Base, TimestampedMixin, SoftDeleteMixin):
+    """One row per assignee on a task. State machine matches the v1
+    Task: pending → accepted/declined/cancelled, accepted → completed.
+    The (task_id, assignee_user_id) WHERE deleted_at IS NULL partial
+    unique index ensures only one active assignment per pair."""
+
+    __tablename__ = "task_assignments"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=new_uuid)
+    task_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    assignee_user_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
     status: Mapped[TaskStatus] = mapped_column(
         Enum(
