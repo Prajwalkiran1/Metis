@@ -516,26 +516,33 @@ git log -1 --format='%B'         # should NOT contain "Co-Authored-By: Claude" o
 
 ```yaml
 last_updated: "2026-05-15"
-active_module: demo_seed_shipped
+active_module: audit_session_1_visibility_gates
 
 # Local DB head stays at 0012 — M10e adds the last ORM mappings
 # (HallTicket/HallTicketVersion/GradeCard/GradeCardVersion/SEEResult/
 # ReEvaluation) on top of the 0007 schema plus a single new dependency
-# (reportlab) for PDF rendering. Full pytest suite passes (147 tests,
-# +17 from M10e). Boot order:
+# (reportlab) for PDF rendering. Pytest suite now at 150 (+3 from the
+# Session 1 gating tests). Boot order:
 #   docker compose -f infra/docker/docker-compose.yml up -d
 #   cd services/api && uv run alembic upgrade head
 #
-# M10 is now complete. PDFs are generated on demand from the
-# eligibility_snapshot / grades_snapshot JSON columns — no file
-# persistence required, R2 wiring stays deferred. The pdf_url field
-# stores `inline:{version_id}` and routes stream bytes via reportlab.
+# Audit Session 1 (visibility gates + role-context indicator) is shipped
+# — see audit_session_1 block below. The audit rework plan lives in
+# AUDIT_FINDINGS.md at repo root; Sessions 2–6 follow in order.
+#
+# Audit closures from the walkthrough that needed no code:
+# - B1: teacher manual attendance already ships in /teacher/attendance
+#   (per-student "Mark present" button at lines 366–389 + override
+#   endpoint). No change required.
+# - Finding 19: git dual-remote (origin pushes to both Prajwalkiran1
+#   and deepthi-sm) verified working in the audit. The "14 commits in
+#   deepthi's repo" the user saw was a stale GitHub UI cache.
 #
 # Next session unblocks the M3 rework (eligibility engine refactor +
 # 60%/85% threshold integration + freeze-deadline guards) followed by
 # M4 rework (assessment_schemes-driven marks computation, NPTEL grading,
-# SEE versioning consumed from M10e). After that: M11 assignments, M5
-# comms, M6 content, M9 admin/analytics.
+# SEE versioning consumed from M10e). The audit-rework cycle (Sessions
+# 1–6) runs in parallel with the M3/M4 work — see AUDIT_FINDINGS.md.
 
 module_states:
 
@@ -829,6 +836,43 @@ module_states:
     status: deferred
     scaffold_only: true
     note: "Empty FastAPI scaffold in services/insights-engine/ with /health. M3 face stub swappable. Build last."
+
+audit_session_1:
+  status: complete
+  date: "2026-05-15"
+  scope: "Visibility gates + role-context indicator — see AUDIT_FINDINGS.md Session 1"
+  backend:
+    - "service_m10e.get_my_hall_ticket — now requires approved_at IS NOT NULL. Students no longer see HOD-internal pre-approval state. Empty-state UI was already handled."
+    - "service_m10e.list_grade_cards — student role filtered to is_finalised=True. HOD/admin paths unchanged so they keep seeing pending cards. History (past finalised cards) remains visible to students through the same endpoint."
+    - "service_m10e.render_hall_ticket_pdf_for_version — student actor blocked with 404 not_yet_released until ticket is approved. Ownership check still runs first so cross-student attempts get 403."
+    - "service_m10e.render_grade_card_pdf_for_version — student actor blocked with 404 not_yet_released until card is_finalised."
+    - "WorkflowError codes added: 'not_yet_released' (404). Ownership errors stay as 'forbidden' (403)."
+  tests:
+    - "+3 critical-path tests in test_m10e.py: student_sees_no_hall_ticket_until_approved, student_sees_no_grade_card_until_finalised, student_pdf_blocked_until_released. All three cover the pre-release blocked state + post-release unblock path."
+    - "Two pre-existing tests updated to match the new contract: test_hall_ticket_pdf_download_streams_pdf now approves before fetching, test_grade_card_pdf_download now uploads SEE before fetching. Both still assert the %PDF magic + content-type."
+    - "Full suite: 150 passed (147 baseline + 3 new gating tests)."
+  frontend:
+    - "apps/web/components/RoleBadge.tsx — new client component. Reads getRole() and a routeContext prop; renders an amber Badge when they differ ('Logged in as HOD · viewing teacher panel'); falls through to a subtle neutral chip when they match."
+    - "All five role layouts (admin/hod/teacher/student/parent) — replaced the hardcoded 'Metis · <role>' string with a stacked block: 'Metis' label + RoleBadge. The matching-role case keeps the visual minimal."
+    - "/hod/dashboard scheme-readiness card — inline note above the offerings table: 'Configuring a scheme opens the teacher-facing editor in HOD context — you remain logged in as HOD.' Single note above the table (rather than per-row) keeps the table compact."
+    - "/student/layout — Hall ticket and Grade card nav entries are now release-gated. Layout mounts call /workflow/hall-tickets/me and /workflow/grade-cards; entries stay visible during the in-flight check (no flash-hide) and only hide once both calls have confirmed empty. Backend gating + UI gating compose: a student with no releases never sees the entries; a student mid-term sees them appear the moment HOD approves."
+    - "/student/hall-ticket + /student/grade-card empty-state copy tightened to explicitly mention HOD release / SEE landing as the unblock conditions."
+  authority_choices:
+    - "F12 — badge only this session (OQ A). Mirroring /teacher/courses/[id]/scheme under /hod/* was deferred. If walkthrough feedback after the badge ships still shows confusion, a Session 1.5 can pick up the route mirror."
+    - "F (small) — inline note shipped on /hod/dashboard above the table, not per-row, to avoid repeating the same sentence on every offering."
+    - "PDF gating extended to both render functions (not just the list endpoint) so a student who knows a version_id can't bypass the list filter."
+    - "Sidebar gating uses 'tri-state' (null while in-flight, false when empty, true when populated). Hide only on false so the user never sees a brief flash where the entry appears then disappears."
+  closed_audit_items:
+    - "B9 (critical bug) — fully closed by backend gating + 3 new tests."
+    - "F12 + F16 — partially closed (badge + dashboard note). Route mirror deferred per OQ A; F16 'HOD-as-teacher CTA' considered already addressed by the existing Configure link plus the new context note."
+    - "A8 — student sidebar gating ships with this session."
+    - "B1 + Finding 19 — closure notes captured in this state block."
+  deferred_to_session_2_or_later:
+    - "Session 2: seed narrow + ad-hoc class sessions."
+    - "Session 3: tasks one-to-many."
+    - "Session 4: ranked elective preferences."
+    - "Session 5: student attendance eligibility surface."
+    - "Session 6: IA polish + docs closure."
 
 frontend:
   next_app_initialized: true
