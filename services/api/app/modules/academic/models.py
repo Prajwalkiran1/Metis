@@ -73,6 +73,15 @@ class TermType(str, enum.Enum):
     fast_track = "fast_track"
 
 
+class EnrollmentState(str, enum.Enum):
+    """Mirrors the Postgres enrollment_state enum from migration 0007."""
+
+    active = "active"
+    dropped = "dropped"
+    withdrawn = "withdrawn"
+    migrated = "migrated"
+
+
 class AssessmentComponentKind(str, enum.Enum):
     cie = "cie"
     aat = "aat"
@@ -458,6 +467,19 @@ class Enrollment(Base):
     enrolled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     withdrawn_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    enrollment_state: Mapped[EnrollmentState] = mapped_column(
+        Enum(
+            EnrollmentState,
+            name="enrollment_state",
+            native_enum=True,
+            create_type=False,
+        ),
+        nullable=False,
+        default=EnrollmentState.active,
+    )
+    academic_term_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("academic_terms.id"), nullable=True
     )
 
     __table_args__ = (

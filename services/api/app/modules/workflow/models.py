@@ -1,9 +1,15 @@
 """SQLAlchemy ORM models for M10 (academic workflow).
 
-M10a covers semester setup + self-publish (this file): SemesterSetup,
-ElectiveGroup, ElectiveGroupOption, AdminNotification. The remaining
-tables (course_registrations, lab_batches, internal_deadlines, etc.)
-get ORM in their respective M10 sub-sessions.
+M10a covers semester setup + self-publish: SemesterSetup, ElectiveGroup,
+ElectiveGroupOption, AdminNotification.
+
+M10b adds the registration window (cols on SemesterSetup) plus the
+cascade-target tables: CourseRegistration, LabBatch, LabBatchMember,
+AcademicOverride.
+
+The remaining tables (lab_batch_assignments, internal_deadlines,
+cie_schedule, tasks, hall_tickets, grade_cards, see_results,
+re_evaluations) get ORM in their respective M10 sub-sessions.
 """
 from __future__ import annotations
 
@@ -19,12 +25,13 @@ from sqlalchemy import (
     Index,
     SmallInteger,
     String,
+    Text,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.db import Base, SoftDeleteMixin, TimestampedMixin, new_uuid
+from app.core.db import Base, SoftDeleteMixin, TimestampedMixin, new_uuid, utcnow
 
 
 class SemesterSetupState(str, enum.Enum):
@@ -32,6 +39,22 @@ class SemesterSetupState(str, enum.Enum):
     published = "published"
     active = "active"
     archived = "archived"
+
+
+class OverrideType(str, enum.Enum):
+    """Mirrors the override_type Postgres enum (migration 0007). Only the
+    members that M10 actually writes are listed here; the rest become
+    relevant when M3/M4 rework lands.
+    """
+
+    attendance_condonation = "attendance_condonation"
+    eligibility_override = "eligibility_override"
+    mark_lock_unlock = "mark_lock_unlock"
+    student_migration = "student_migration"
+    lab_batch_reassignment = "lab_batch_reassignment"
+    assessment_scheme_unlock = "assessment_scheme_unlock"
+    see_marks_correction = "see_marks_correction"
+    makeup_cie_authorization = "makeup_cie_authorization"
 
 
 class SemesterSetup(Base, TimestampedMixin, SoftDeleteMixin):
@@ -75,6 +98,15 @@ class SemesterSetup(Base, TimestampedMixin, SoftDeleteMixin):
         DateTime(timezone=True), nullable=True
     )
     notes: Mapped[str | None] = mapped_column(String, nullable=True)
+    # M10b — HOD-controlled registration window. The "open" predicate is
+    # state in (published, active) AND now() between these two; CHECK
+    # constraint at the DB level keeps closes_at > opens_at when both set.
+    registration_opens_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    registration_closes_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     __table_args__ = (
         Index(
@@ -152,6 +184,10 @@ class ElectiveGroupOption(Base, TimestampedMixin, SoftDeleteMixin):
     migrated_to_option_id: Mapped[UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("elective_group_options.id"), nullable=True
     )
+    # M10b — per-option hard cap (capacity). NULL = uncapped. Group-level
+    # max_enrollment stays as a soft total; the cascade respects the
+    # per-option value when set.
+    max_enrollment: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
 
 
 class AdminNotification(Base):
@@ -171,7 +207,10 @@ class AdminNotification(Base):
     event_type: Mapped[str] = mapped_column(String(50), nullable=False)
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=text("NOW()")
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        server_default=text("NOW()"),
     )
     read_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -183,4 +222,151 @@ class AdminNotification(Base):
             "college_id",
             "created_at",
         ),
+    )
+
+
+# ── course_registrations (M10b — student elective + backlog state) ──────────
+class CourseRegistration(Base, TimestampedMixin, SoftDeleteMixin):
+    """A student's registered course for a semester setup.
+
+    M10b only writes elective rows (one per elective group per student).
+    Mandatory courses are surfaced in the registration UI by reading
+    setup.courses minus the courses appearing in elective_group_options;
+    they do NOT get a course_registrations row until a future cleanup
+    (M9 reports want a single audit-friendly source, but that's deferred).
+
+    Status values: pending | approved | migrated | cancelled | backlog.
+    """
+
+    __tablename__ = "course_registrations"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=new_uuid)
+    college_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("colleges.id"), nullable=False, index=True
+    )
+    student_user_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    semester_setup_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("semester_setups.id"), nullable=False
+    )
+    elective_group_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("elective_groups.id"), nullable=True
+    )
+    elective_group_option_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("elective_group_options.id"), nullable=True
+    )
+    course_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("courses.id"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="approved"
+    )
+    is_backlog: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    backlog_source_term_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("academic_terms.id"), nullable=True
+    )
+
+
+# ── lab_batches + lab_batch_members (the cascade touches the member rows) ──
+class LabBatch(Base, TimestampedMixin, SoftDeleteMixin):
+    __tablename__ = "lab_batches"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=new_uuid)
+    college_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("colleges.id"), nullable=False, index=True
+    )
+    course_offering_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("course_offerings.id"), nullable=False
+    )
+    section_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("sections.id"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(50), nullable=False)
+    display_order: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
+
+
+class LabBatchMember(Base):
+    """Append-only with a soft `removed_at`. The cascade marks
+    `removed_at=NOW()` and `removed_reason='migrated_to_other_offering'`
+    instead of deleting, so M3/M4 history calculations still see the
+    student in the old batch for the window they were there.
+    """
+
+    __tablename__ = "lab_batch_members"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=new_uuid)
+    college_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("colleges.id"), nullable=False
+    )
+    lab_batch_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("lab_batches.id"), nullable=False
+    )
+    student_user_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        server_default=text("NOW()"),
+    )
+    removed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    removed_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# ── academic_overrides (append-only typed audit of HOD/admin overrides) ────
+class AcademicOverride(Base):
+    """One row per privileged academic override. Append-only — never
+    updated, never soft-deleted. M9 admin analytics reads this table.
+
+    M10b writes `student_migration` rows; M3/M4 rework will start writing
+    the rest (attendance_condonation, mark_lock_unlock, etc.).
+    """
+
+    __tablename__ = "academic_overrides"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=new_uuid)
+    college_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("colleges.id"), nullable=False
+    )
+    override_type: Mapped[OverrideType] = mapped_column(
+        Enum(
+            OverrideType,
+            name="override_type",
+            native_enum=True,
+            create_type=False,
+        ),
+        nullable=False,
+    )
+    actor_user_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    target_student_user_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    target_course_offering_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("course_offerings.id"), nullable=True
+    )
+    target_entity_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    target_entity_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
+    old_value: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    new_value: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    approved_by_user_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        server_default=text("NOW()"),
     )

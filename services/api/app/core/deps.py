@@ -83,6 +83,7 @@ require_admin = require_role(UserRole.admin)
 require_teacher_or_admin = require_role(UserRole.teacher, UserRole.admin)
 require_hod = require_role(UserRole.hod)
 require_hod_or_admin = require_role(UserRole.hod, UserRole.admin)
+require_student = require_role(UserRole.student)
 # HOD scope includes teaching their own offerings, so any teacher-permitted
 # endpoint should accept HOD too.
 require_teacher_hod_or_admin = require_role(
