@@ -9,6 +9,8 @@ import { getAccessToken, getRole } from "@/lib/auth";
 import { logout } from "@/lib/api";
 
 const NAV = [
+  { href: "/student/dashboard", label: "Dashboard" },
+  { href: "/student/registration", label: "Registration" },
   { href: "/student/attendance", label: "Attendance" },
   { href: "/student/marks", label: "Marks" },
   // Stubs for future student-side modules.

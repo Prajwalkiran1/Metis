@@ -26,7 +26,7 @@ function landingFor(role: Role): string {
   if (role === "hod") return "/hod/dashboard";
   if (role === "teacher") return "/teacher/attendance";
   if (role === "parent") return "/parent/marks";
-  return "/student/attendance";
+  return "/student/dashboard";
 }
 
 declare global {
