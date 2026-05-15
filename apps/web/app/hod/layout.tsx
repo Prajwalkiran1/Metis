@@ -13,7 +13,7 @@ import { logout } from "@/lib/api";
 const NAV = [
   { href: "/hod/dashboard", label: "Dashboard" },
   { href: "/hod/semester-setup", label: "Semester setup" },
-  { href: "/hod/electives", label: "Electives", disabled: true },
+  { href: "/hod/electives", label: "Electives" },
   { href: "/hod/lab-batches", label: "Lab batches", disabled: true },
   { href: "/hod/cie-schedule", label: "CIE schedule", disabled: true },
   { href: "/hod/tasks", label: "Tasks", disabled: true },

@@ -22,6 +22,10 @@ type HodDashboard = {
     state: "draft" | "published" | "active" | "archived";
     published_at: string | null;
   } | null;
+  electives_summary: {
+    under_subscribed_count: number;
+    total_options: number;
+  } | null;
   placeholder: {
     message: string;
     department_active_offerings: number;
@@ -105,12 +109,34 @@ export default function HodDashboardPage() {
         )}
         <p className="mt-4 text-sm text-zinc-600">{data.placeholder.message}</p>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-zinc-500">
-          <li>Elective registration + dissolution + cascade — M10b</li>
           <li>Lab batches + assessment scheme picker — M10c</li>
           <li>CIE schedule + tasks + internal deadlines — M10d</li>
           <li>Hall tickets + grade cards + SEE/re-eval/makeup — M10e</li>
         </ul>
       </Card>
+
+      {data.electives_summary &&
+      data.electives_summary.under_subscribed_count > 0 ? (
+        <Card className="border-amber-300 bg-amber-50 p-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-amber-900">
+              {data.electives_summary.under_subscribed_count} elective option
+              {data.electives_summary.under_subscribed_count === 1 ? "" : "s"}{" "}
+              under-subscribed
+            </h2>
+            <a
+              href="/hod/electives"
+              className="text-sm text-amber-900 underline"
+            >
+              Review →
+            </a>
+          </div>
+          <p className="mt-1 text-xs text-amber-900">
+            Options below their min_enrollment_to_run threshold for the current
+            setup. Dissolve them and migrate students to a surviving option.
+          </p>
+        </Card>
+      ) : null}
 
       <Card className="overflow-x-auto">
         <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
