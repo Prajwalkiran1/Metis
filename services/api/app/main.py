@@ -9,6 +9,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from app.core.config import settings
+from app.core.event_bus import start_subscriber, stop_subscriber
 from app.core.logging import TraceIdMiddleware, configure_logging, get_logger
 from app.core.ratelimit import limiter
 from app.core.redis import close_redis
@@ -25,6 +26,7 @@ from app.modules.workflow.router import (
     student_registration_router,
     workflow_router,
 )
+from app.modules.workflow.subscribers import register_workflow_subscribers
 
 
 async def _rate_limit_handler(request, exc: RateLimitExceeded):
@@ -41,7 +43,14 @@ async def lifespan(app: FastAPI):
     configure_logging()
     log = get_logger()
     log.info("api.startup", env=settings.app_env, version=app.version)
+    register_workflow_subscribers()
+    if settings.app_env != "test":
+        # In `test`, the subscriber loop is disabled so the asyncio event
+        # loop doesn't keep a dangling task that races teardown — tests
+        # exercise the handler registry directly via _dispatch.
+        await start_subscriber()
     yield
+    await stop_subscriber()
     await close_redis()
     log.info("api.shutdown")
 

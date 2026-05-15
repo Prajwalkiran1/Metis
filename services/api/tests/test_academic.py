@@ -76,29 +76,39 @@ async def test_departments_crud_and_soft_delete(client):
     assert r.status_code == 201, r.text
     dept_id = r.json()["id"]
 
-    # Accumulated test cruft can push the dept past the default page limit;
-    # ask for a wide window so the assertion isn't a function of how many
-    # times the suite has run.
-    big = {"limit": "200"}
-    lst = await client.get("/departments", headers=h, params=big)
-    assert lst.status_code == 200
-    codes = [d["code"] for d in lst.json()["items"]]
-    assert code in codes
+    # Accumulated test cruft can push the dept beyond the endpoint's hard
+    # limit (200). Verify presence via direct GET so the test is invariant
+    # to how many other test runs have left rows behind.
+    got = await client.get(f"/departments/{dept_id}", headers=h)
+    assert got.status_code == 200
+    assert got.json()["code"] == code
 
     dele = await client.delete(f"/departments/{dept_id}", headers=h)
     assert dele.status_code == 204
 
-    lst2 = await client.get("/departments", headers=h, params=big)
-    codes2 = [d["code"] for d in lst2.json()["items"]]
-    assert code not in codes2
+    # After soft-delete, the row is hidden by default.
+    gone = await client.get(f"/departments/{dept_id}", headers=h)
+    assert gone.status_code == 404
 
-    lst3 = await client.get(
-        "/departments",
-        headers=h,
-        params={"limit": "200", "include_deleted": "true"},
-    )
-    codes3 = [d["code"] for d in lst3.json()["items"]]
-    assert code in codes3
+    # With include_deleted=true via listing we should still find it. Filter
+    # the page locally rather than relying on it landing on the first page.
+    found = False
+    offset = 0
+    while True:
+        lst = await client.get(
+            "/departments",
+            headers=h,
+            params={"limit": "200", "offset": str(offset), "include_deleted": "true"},
+        )
+        body = lst.json()
+        items = body.get("items", [])
+        if any(d["code"] == code for d in items):
+            found = True
+            break
+        if len(items) < 200:
+            break
+        offset += 200
+    assert found, "soft-deleted department should appear with include_deleted=true"
 
 
 @pytest.mark.asyncio

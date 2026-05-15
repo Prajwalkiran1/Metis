@@ -170,46 +170,67 @@ async def _build_fixture(
         await s.flush()
         fx.term_id = term.id
 
-        # 3. fresh batch + section. The CHECK constraint pins admission_year
-        # to [1900, 2100], so we can't keep bumping max+1 forever. Instead,
-        # find the smallest unused year in that window. Tests rarely run more
-        # than ~50 fixtures per DB life, so 2100-1900=200 slots are plenty;
-        # CI tear-down resets the volume.
+        # 3. batch + section. The CHECK constraint pins admission_year to
+        # [1900, 2100] so once that window fills (across many M10x runs on
+        # the same docker volume) the fresh-batch path stops working.
+        # Tests don't actually need a brand-new batch — the cascade only
+        # cares about a fresh ACADEMIC TERM, fresh USNs, and fresh
+        # course_offerings. We reuse the most recent existing CSE
+        # batch+section when one exists and fall back to creating new ones.
         from sqlalchemy import func as _func
 
-        used_years = (
+        existing_pair = (
             await s.execute(
-                select(Batch.admission_year).where(
-                    Batch.college_id == fx.college_id,
+                select(Section, Batch)
+                .join(Batch, Batch.id == Section.batch_id)
+                .where(
+                    Section.college_id == fx.college_id,
                     Batch.department_id == fx.dept_id,
+                    Section.deleted_at.is_(None),
+                    Batch.deleted_at.is_(None),
                 )
+                .order_by(Section.created_at.desc())
+                .limit(1)
             )
-        ).scalars().all()
-        used = set(used_years)
-        admission_year = next(
-            (y for y in range(1900, 2100) if y not in used), None
-        )
-        assert admission_year is not None, "ran out of admission_year slots"
-        batch = Batch(
-            college_id=fx.college_id,
-            department_id=fx.dept_id,
-            name=f"CSE Test {_short()}",
-            admission_year=admission_year,
-            program_duration_years=4,
-            current_semester=3,
-        )
-        s.add(batch)
-        await s.flush()
-        fx.batch_id = batch.id
+        ).first()
+        if existing_pair is not None:
+            section_row, batch_row = existing_pair
+            fx.batch_id = batch_row.id
+            fx.section_id = section_row.id
+        else:
+            used_years = (
+                await s.execute(
+                    select(Batch.admission_year).where(
+                        Batch.college_id == fx.college_id,
+                        Batch.department_id == fx.dept_id,
+                    )
+                )
+            ).scalars().all()
+            used = set(used_years)
+            admission_year = next(
+                (y for y in range(1900, 2100) if y not in used), None
+            )
+            assert admission_year is not None, "ran out of admission_year slots"
+            batch = Batch(
+                college_id=fx.college_id,
+                department_id=fx.dept_id,
+                name=f"CSE Test {_short()}",
+                admission_year=admission_year,
+                program_duration_years=4,
+                current_semester=3,
+            )
+            s.add(batch)
+            await s.flush()
+            fx.batch_id = batch.id
 
-        section = Section(
-            college_id=fx.college_id,
-            batch_id=fx.batch_id,
-            name="A",
-        )
-        s.add(section)
-        await s.flush()
-        fx.section_id = section.id
+            section = Section(
+                college_id=fx.college_id,
+                batch_id=fx.batch_id,
+                name="A",
+            )
+            s.add(section)
+            await s.flush()
+            fx.section_id = section.id
 
         # 4. student users + active enrollments
         student_emails = student_emails or [

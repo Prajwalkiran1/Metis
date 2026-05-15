@@ -12,6 +12,7 @@ const NAV = [
   { href: "/admin/academic", label: "Academic" },
   { href: "/admin/users", label: "Users" },
   { href: "/admin/notifications", label: "Notifications" },
+  { href: "/admin/internal-deadlines", label: "Internal deadlines" },
   // Stubs for future modules — kept here so the shell is complete.
   { href: "/admin/reports", label: "Reports", disabled: true },
   { href: "/admin/system", label: "System", disabled: true },
