@@ -149,6 +149,12 @@ from app.modules.workflow.models import (  # noqa: E402
     TaskStatus,
     TaskType,
 )
+from app.modules.workflow.service_m10e import (  # noqa: E402
+    approve_hall_tickets,
+    generate_grade_card,
+    generate_hall_ticket_for_student,
+    regenerate_grade_card,
+)
 
 from _demo_names import parent_name, student_name, teacher_name  # noqa: E402
 
@@ -2158,182 +2164,91 @@ async def seed_see_and_grade_cards(
             )
             counts["re_evaluations"] += 1
 
-    # Hall tickets — one per focal student, HOD-approved, with the v1
-    # snapshot embedded. PDF is inline:{version_id}.
+    # Hall tickets — delegate to the M10e service so the eligibility
+    # snapshot has the canonical shape the UI consumes
+    # (course_offering_id, course_type, attendance_percent, cie_percent,
+    # *_eligible, reason). The service builds the snapshot from the
+    # seeded class_sessions + attendance + marks rows.
+    ticket_ids: list[uuid.UUID] = []
     for stu in focal_students:
-        eligibility_snapshot = {
-            "term": term.code,
-            "subjects": [
-                {
-                    "course_code": f"CS5{i:02d}",
-                    "course_title": f"Subject {i}",
-                    "eligible": i not in (5, 7),  # 2 subjects ineligible (NA)
-                    "reason_if_na": "Attendance below 85%" if i == 5 else (
-                        "CIE below 40%" if i == 7 else None
-                    ),
-                }
-                for i in range(1, 8)
-            ],
-        }
-        ticket = HallTicket(
-            college_id=college_id,
-            student_user_id=stu.id,
-            academic_term_id=term.id,
-            generated_at=NOW - timedelta(days=70),
-            approved_at=NOW - timedelta(days=65),
-            approved_by_user_id=hod_user.id,
-            is_active=True,
-        )
-        session.add(ticket)
-        await session.flush()
-        version = HallTicketVersion(
-            college_id=college_id,
-            hall_ticket_id=ticket.id,
-            version_number=1,
-            pdf_url="",  # set below now that we have version.id
-            eligibility_snapshot=eligibility_snapshot,
-            generated_at=NOW - timedelta(days=70),
-            generated_by_user_id=hod_user.id,
-        )
-        session.add(version)
-        await session.flush()
-        version.pdf_url = f"inline:{version.id}"
-        ticket.current_version_id = version.id
-        counts["hall_tickets"] += 1
-
-    # Grade cards — initial + late-SEE v2 for the first focal student.
-    # Pending state is now per-student (tracks the see_results pending
-    # set above) so the snapshot matches what /student/grade-card would
-    # render after the M10e service composes it.
-    for stu in focal_students:
-        subject_rows: list[dict[str, Any]] = []
-        student_section_id = None
-        for (_d, _y, _s), section in sections.items():
-            if stu in students_by_section.get((_d, _y, _s), []):
-                student_section_id = section.id
-                break
-
-        student_pending = stu.id in pending_student_ids
-        for offering in target_offerings:
-            if offering.section_id != student_section_id:
-                continue
-            course = await session.get(Course, offering.course_id)
-            is_pending = student_pending
-            grade = "I" if is_pending else RNG.choice(["S", "A", "B", "B", "C", "C", "D", "E"])
-            subject_rows.append(
-                {
-                    "course_code": course.code,
-                    "course_title": course.title,
-                    "credits": course.credits,
-                    "internal_marks": int(RNG.randint(28, 50)),
-                    "see_marks": "Pending" if is_pending else int(RNG.randint(45, 95)),
-                    "total_percent": "Pending" if is_pending else round(RNG.uniform(55, 92), 1),
-                    "grade": grade,
-                    "is_pending": is_pending,
-                }
+        try:
+            ticket, _version, _is_new = await generate_hall_ticket_for_student(
+                session,
+                actor=hod_user,
+                student_user_id=stu.id,
+                academic_term_id=term.id,
             )
-
-        sgpa_calc = (
-            "Pending"
-            if student_pending
-            else round(RNG.uniform(7.0, 9.5), 2)
+            ticket_ids.append(ticket.id)
+            counts["hall_tickets"] += 1
+        except Exception as e:
+            # Skip students with no enrollment in this term — shouldn't
+            # happen for the focal cohort but be defensive.
+            print(f"  hall_ticket skipped for {stu.usn}: {e}")
+    # Batch-approve all generated tickets so /hod/hall-tickets shows them
+    # already approved (matches the past-term completed state).
+    if ticket_ids:
+        await approve_hall_tickets(
+            session, actor=hod_user, hall_ticket_ids=ticket_ids
         )
 
-        snapshot = {
-            "term": term.code,
-            "subjects": subject_rows,
-            "sgpa": sgpa_calc,
-            "grade_bands": "S/A/B/C/D/E/F/I (BMSCE 10-point)",
-        }
+    # Grade cards — call generate_grade_card per focal student. The
+    # service reads the current SEE row + per-subject internal marks and
+    # produces the canonical grades_snapshot shape.
+    for stu in focal_students:
+        try:
+            await generate_grade_card(
+                session,
+                actor=hod_user,
+                student_user_id=stu.id,
+                academic_term_id=term.id,
+                trigger_reason="initial",
+            )
+            counts["grade_cards"] += 1
+        except Exception as e:
+            print(f"  grade_card skipped for {stu.usn}: {e}")
 
-        gc = GradeCard(
-            college_id=college_id,
-            student_user_id=stu.id,
-            academic_term_id=term.id,
-            is_finalised=not any(s["is_pending"] for s in subject_rows),
-        )
-        session.add(gc)
-        await session.flush()
-        v1 = GradeCardVersion(
-            college_id=college_id,
-            grade_card_id=gc.id,
-            version_number=1,
-            pdf_url="",
-            grades_snapshot=snapshot,
-            generated_at=NOW - timedelta(days=40),
-            generated_by_user_id=hod_user.id,
-            trigger_reason="initial",
-        )
-        session.add(v1)
-        await session.flush()
-        v1.pdf_url = f"inline:{v1.id}"
-        gc.current_version_id = v1.id
-        counts["grade_cards"] += 1
-    await session.flush()
-
-    # For the focal student #1 only: simulate a late SEE release that
-    # generates v2 of their grade card with a pending → released subject.
+    # Late-SEE simulation: the focal student #0 didn't have a SEE row,
+    # so their v1 grade card came out with I grades. Insert a SEE result
+    # for one of their enrollments and trigger regeneration so v2 ships
+    # with a real grade. This is exactly what the M10e SEE-upload path
+    # does in production, minus the CSV ceremony.
     first_student = focal_students[0]
-    first_gc = (
-        await session.execute(
-            select(GradeCard).where(
-                GradeCard.student_user_id == first_student.id,
-                GradeCard.academic_term_id == term.id,
-            )
-        )
-    ).scalar_one_or_none()
-    if first_gc is not None:
-        # Mutate the snapshot: flip the first pending row to a released grade.
-        old_v = (
+    first_enrollment_id = enrollment_map.get(first_student.id)
+    if first_enrollment_id is not None:
+        existing = (
             await session.execute(
-                select(GradeCardVersion).where(GradeCardVersion.id == first_gc.current_version_id)
+                select(SEEResult).where(
+                    SEEResult.enrollment_id == first_enrollment_id,
+                    SEEResult.is_current.is_(True),
+                )
             )
-        ).scalar_one()
-        new_snapshot = dict(old_v.grades_snapshot)
-        new_subjects = []
-        flipped = False
-        for s in new_snapshot["subjects"]:
-            if s.get("is_pending") and not flipped:
-                s = {
-                    **s,
-                    "is_pending": False,
-                    "see_marks": 72,
-                    "total_percent": 81.5,
-                    "grade": "A",
-                }
-                flipped = True
-            new_subjects.append(s)
-        new_snapshot["subjects"] = new_subjects
-        if all(not s["is_pending"] for s in new_subjects):
-            new_snapshot["sgpa"] = 8.42
-            first_gc.is_finalised = True
-        v2 = GradeCardVersion(
-            college_id=college_id,
-            grade_card_id=first_gc.id,
-            version_number=2,
-            pdf_url="",
-            grades_snapshot=new_snapshot,
-            generated_at=NOW - timedelta(days=3),
-            generated_by_user_id=hod_user.id,
-            trigger_reason="see_released",
-        )
-        session.add(v2)
-        await session.flush()
-        v2.pdf_url = f"inline:{v2.id}"
-        first_gc.current_version_id = v2.id
-        await session.flush()
-        # Best-effort publish the regen event.
-        await publish(
-            "grade_card.regenerated",
-            {
-                "grade_card_id": str(first_gc.id),
-                "version_number": 2,
-                "trigger_reason": "see_released",
-                "student_user_id": str(first_student.id),
-            },
-            college_id=college_id,
-            actor_user_id=hod_user.id,
-        )
+        ).scalar_one_or_none()
+        if existing is None:
+            session.add(
+                SEEResult(
+                    college_id=college_id,
+                    enrollment_id=first_enrollment_id,
+                    kind=SEEResultKind.original,
+                    marks_obtained=Decimal("72.00"),
+                    max_marks=Decimal("100"),
+                    uploaded_at=NOW - timedelta(days=3),
+                    uploaded_by_user_id=hod_user.id,
+                    csv_upload_batch_id=uuid.uuid4(),
+                    notes="Late SEE release",
+                    is_current=True,
+                )
+            )
+            await session.flush()
+            try:
+                await regenerate_grade_card(
+                    session,
+                    actor=hod_user,
+                    student_user_id=first_student.id,
+                    academic_term_id=term.id,
+                    trigger_reason="see_released",
+                )
+            except Exception as e:
+                print(f"  grade_card v2 regen skipped: {e}")
 
     return counts
 
