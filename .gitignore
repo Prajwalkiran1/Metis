@@ -257,3 +257,8 @@ LEARN.md
 
 # uv cache (if a future .envrc sets UV_CACHE_DIR locally)
 .uv-cache/
+
+# Local session driver files — working notes, not for git history.
+*_STARTER_PROMPT.md
+SESSION_*_KICKOFF.md
+NEXT_SESSION.md
