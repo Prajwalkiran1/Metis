@@ -17,12 +17,16 @@ import enum
 from datetime import datetime
 from uuid import UUID
 
+from decimal import Decimal
+
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     Enum,
     ForeignKey,
     Index,
+    Numeric,
     SmallInteger,
     String,
     Text,
@@ -315,6 +319,375 @@ class LabBatchMember(Base):
         DateTime(timezone=True), nullable=True
     )
     removed_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# ── internal_deadlines (M10d) ──────────────────────────────────────────────
+class DeadlineKind(str, enum.Enum):
+    """Mirrors the kind VARCHAR(20) on internal_deadlines.
+
+    institutional_hard   admin owns; one row per (college, term, NULL dept, NULL offering)
+    department_soft      HOD owns; one row per (college, term, dept, NULL offering)
+    per_course_freeze    teacher owns own offering; one row per (term, dept, offering)
+    """
+
+    institutional_hard = "institutional_hard"
+    department_soft = "department_soft"
+    per_course_freeze = "per_course_freeze"
+
+
+class InternalDeadline(Base, TimestampedMixin, SoftDeleteMixin):
+    __tablename__ = "internal_deadlines"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=new_uuid)
+    college_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("colleges.id"), nullable=False
+    )
+    academic_term_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("academic_terms.id"), nullable=False
+    )
+    department_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("departments.id"), nullable=True
+    )
+    course_offering_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("course_offerings.id"), nullable=True
+    )
+    deadline_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    set_by_user_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    is_frozen: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    frozen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    frozen_by_user_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# ── cie_schedule (M10d) ────────────────────────────────────────────────────
+class CIESchedule(Base, TimestampedMixin, SoftDeleteMixin):
+    __tablename__ = "cie_schedule"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=new_uuid)
+    college_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("colleges.id"), nullable=False
+    )
+    course_offering_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("course_offerings.id"), nullable=False
+    )
+    cie_number: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    scheduled_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    duration_minutes: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=60
+    )
+    room_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("rooms.id"), nullable=True
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_published: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+# ── tasks (M10d) ───────────────────────────────────────────────────────────
+class TaskType(str, enum.Enum):
+    invigilation = "invigilation"
+    paper_setting = "paper_setting"
+    evaluation = "evaluation"
+    makeup_exam = "makeup_exam"
+    other = "other"
+
+
+class TaskStatus(str, enum.Enum):
+    pending = "pending"
+    accepted = "accepted"
+    declined = "declined"
+    completed = "completed"
+    cancelled = "cancelled"
+
+
+# ── M10e: hall_tickets + versions ──────────────────────────────────────────
+class HallTicket(Base, TimestampedMixin, SoftDeleteMixin):
+    __tablename__ = "hall_tickets"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=new_uuid)
+    college_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("colleges.id"), nullable=False
+    )
+    student_user_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    academic_term_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("academic_terms.id"), nullable=False
+    )
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        server_default=text("NOW()"),
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    approved_by_user_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    current_version_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("hall_ticket_versions.id", deferrable=True, initially="DEFERRED"),
+        nullable=True,
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class HallTicketVersion(Base):
+    __tablename__ = "hall_ticket_versions"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=new_uuid)
+    college_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("colleges.id"), nullable=False
+    )
+    hall_ticket_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("hall_tickets.id"), nullable=False
+    )
+    version_number: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    pdf_url: Mapped[str] = mapped_column(Text, nullable=False)
+    eligibility_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        server_default=text("NOW()"),
+    )
+    generated_by_user_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+
+
+# ── M10e: grade_cards + versions ───────────────────────────────────────────
+class GradeCard(Base, TimestampedMixin, SoftDeleteMixin):
+    __tablename__ = "grade_cards"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=new_uuid)
+    college_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("colleges.id"), nullable=False
+    )
+    student_user_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    academic_term_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("academic_terms.id"), nullable=False
+    )
+    current_version_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("grade_card_versions.id", deferrable=True, initially="DEFERRED"),
+        nullable=True,
+    )
+    is_finalised: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class GradeCardVersion(Base):
+    __tablename__ = "grade_card_versions"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=new_uuid)
+    college_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("colleges.id"), nullable=False
+    )
+    grade_card_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("grade_cards.id"), nullable=False
+    )
+    version_number: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    pdf_url: Mapped[str] = mapped_column(Text, nullable=False)
+    grades_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        server_default=text("NOW()"),
+    )
+    generated_by_user_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    trigger_reason: Mapped[str] = mapped_column(String(50), nullable=False)
+
+
+# ── M10e: see_results + re_evaluations ─────────────────────────────────────
+class SEEResultKind(str, enum.Enum):
+    original = "original"
+    re_evaluation = "re_evaluation"
+    makeup = "makeup"
+
+
+class SEEResult(Base, TimestampedMixin, SoftDeleteMixin):
+    __tablename__ = "see_results"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=new_uuid)
+    college_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("colleges.id"), nullable=False
+    )
+    enrollment_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("enrollments.id"), nullable=False
+    )
+    kind: Mapped[SEEResultKind] = mapped_column(
+        Enum(
+            SEEResultKind,
+            name="see_result_kind",
+            native_enum=True,
+            create_type=False,
+        ),
+        nullable=False,
+    )
+    marks_obtained: Mapped[Decimal | None] = mapped_column(
+        Numeric(6, 2), nullable=True
+    )
+    max_marks: Mapped[Decimal] = mapped_column(Numeric(6, 2), nullable=False)
+    uploaded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    uploaded_by_user_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    csv_upload_batch_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    superseded_by: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("see_results.id"), nullable=True
+    )
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class ReEvaluation(Base, TimestampedMixin, SoftDeleteMixin):
+    __tablename__ = "re_evaluations"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=new_uuid)
+    college_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("colleges.id"), nullable=False
+    )
+    enrollment_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("enrollments.id"), nullable=False
+    )
+    requested_by_student_user_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    request_window_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        server_default=text("NOW()"),
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="requested"
+    )
+    original_see_result_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("see_results.id"), nullable=False
+    )
+    revised_see_result_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("see_results.id"), nullable=True
+    )
+    outcome: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    resolved_by_user_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+
+
+class Task(Base, TimestampedMixin, SoftDeleteMixin):
+    __tablename__ = "tasks"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=new_uuid)
+    college_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("colleges.id"), nullable=False
+    )
+    assigned_by_user_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    assigned_to_user_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    task_type: Mapped[TaskType] = mapped_column(
+        Enum(
+            TaskType,
+            name="task_type",
+            native_enum=True,
+            create_type=False,
+        ),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    related_entity_type: Mapped[str | None] = mapped_column(
+        String(50), nullable=True
+    )
+    related_entity_id: Mapped[UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
+    due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    status: Mapped[TaskStatus] = mapped_column(
+        Enum(
+            TaskStatus,
+            name="task_status",
+            native_enum=True,
+            create_type=False,
+        ),
+        nullable=False,
+        default=TaskStatus.pending,
+    )
+    status_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    decline_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# ── lab_batch_assignments (M10c — batch incharges + co-evaluators) ─────────
+class LabBatchAssignment(Base):
+    """One row per teacher↔batch role binding. Append-only: a fresh row
+    represents a new assignment, and removing one sets `unassigned_at`
+    plus a reason. The partial unique index pins one active row per
+    (batch, teacher, role); the service relies on it to enforce the
+    one-incharge-per-batch invariant atomically.
+    """
+
+    __tablename__ = "lab_batch_assignments"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=new_uuid)
+    college_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("colleges.id"), nullable=False
+    )
+    lab_batch_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("lab_batches.id"), nullable=False
+    )
+    teacher_user_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="batch_incharge"
+    )
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        server_default=text("NOW()"),
+    )
+    unassigned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    unassigned_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 # ── academic_overrides (append-only typed audit of HOD/admin overrides) ────

@@ -13,6 +13,9 @@ const NAV = [
   { href: "/student/registration", label: "Registration" },
   { href: "/student/attendance", label: "Attendance" },
   { href: "/student/marks", label: "Marks" },
+  { href: "/student/hall-ticket", label: "Hall ticket" },
+  { href: "/student/grade-card", label: "Grade card" },
+  { href: "/student/re-eval", label: "Re-evaluation" },
   // Stubs for future student-side modules.
   { href: "/student/materials", label: "Materials", disabled: true },
 ];

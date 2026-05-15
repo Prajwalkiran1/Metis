@@ -400,7 +400,7 @@ metis/
 | M5 Comms Service | 🔴 Not started | No | — | M1, M2 rework, M10 event bus |
 | M6 Content Service | 🔴 Not started | No | — | M1, M2 rework |
 | M9 Admin Portal + Analytics | 🔴 Not started | No | — | All others |
-| M10 Academic Workflow | 🟡 M10a + M10b shipped | Yes (workflow module live) | M10a: SemesterSetup CRUD + self-publish + admin_notifications + event bus publisher. M10b: registration window, student elective registration, HOD elective dissolution + cascade (course_registrations + enrollments cross-section + lab_batch_members + academic_overrides in one transaction), manual migrate, capacity cap, dissolve preview, /student/dashboard + /student/registration + /hod/electives. **M10c–e pending.** | — (for M10c) |
+| M10 Academic Workflow | 🟢 Complete (M10a–e) | Yes (workflow module live) | M10a: SemesterSetup CRUD + self-publish + admin_notifications + event bus publisher. M10b: registration window, student elective registration, HOD elective dissolution + cascade (course_registrations + enrollments cross-section + lab_batch_members + academic_overrides in one transaction), manual migrate, capacity cap, dissolve preview, /student/dashboard + /student/registration + /hod/electives. M10c: lab batches (CRUD + members + auto-compose round-robin + incharges with HOD-override audit), per-offering scheme picker (template / clone / custom; teacher AAT ≤20%, HOD pushes to 40% with academic_overrides; lock = teacher, unlock = HOD; integrated lab side inherits from parent), dept scheme templates, /hod/lab-batches + /hod/scheme-templates + /teacher/courses/[id]/scheme + /hod/dashboard scheme-readiness card. M10d: internal deadlines (admin/HOD/teacher own institutional_hard/department_soft/per_course_freeze), CIE scheduling per offering with HOD-publish + ordering, tasks (HOD assigns dept-only, accept/decline/complete state machine), real Redis subscriber framework (psubscribe loop + in-process handler registry + admin_notifications writer for internal_deadline.crossed), /hod/cie-schedule + /hod/tasks + /teacher/tasks + /admin/internal-deadlines. M10e: eligibility engine (attendance ≥85% + CIE ≥40% from M3 v1 + M4 v1 sources), hall tickets (per-student + dept-batch generate + HOD approve + version regenerate + reportlab PDF render), SEE CSV upload + supersede chain, re-evaluation (student request within window + HOD CSV upload with improve-or-hold), makeup (HOD authorize + CSV upload), grade cards (auto-regenerate on SEE/re-eval/makeup with trigger_reason versions + SGPA + grade bands), /hod/hall-tickets + /hod/see-upload + /hod/re-eval + /hod/makeup + /student/hall-ticket + /student/grade-card + /student/re-eval. M10 complete; unblocks M3+M4 rework. | — |
 | M11 Assignments | 🔴 Not started | No | NEW MODULE — assignments, portal+offline modes, AAT linkage, parent visibility | M2 rework, M10, M6 |
 | M7 Learning Engine | ⚫ Deferred | No (scaffold) | AI layer — built last; integration points ready | scaffold exists |
 | M8 Insights + Face Verify | ⚫ Deferred | No (scaffold) | AI layer — built last; M3 face-verify stub swappable | scaffold exists |
@@ -516,17 +516,26 @@ git log -1 --format='%B'         # should NOT contain "Co-Authored-By: Claude" o
 
 ```yaml
 last_updated: "2026-05-15"
-active_module: M10b_shipped
+active_module: M10e_shipped_module_complete
 
-# Local DB head is now 0012 after M10b. Full pytest suite passes (100 tests).
-# Next session is M10c (Lab Batches + Assessment Scheme Templates +
-# per-offering picker UI). Boot order remains:
+# Local DB head stays at 0012 — M10e adds the last ORM mappings
+# (HallTicket/HallTicketVersion/GradeCard/GradeCardVersion/SEEResult/
+# ReEvaluation) on top of the 0007 schema plus a single new dependency
+# (reportlab) for PDF rendering. Full pytest suite passes (147 tests,
+# +17 from M10e). Boot order:
 #   docker compose -f infra/docker/docker-compose.yml up -d
 #   cd services/api && uv run alembic upgrade head
 #
-# Seed academic_calendar fix shipped this session — the lookup now uses
-# scalars().first() instead of scalar_one_or_none() so dev DBs with
-# pre-existing duplicate rows don't crash the seed.
+# M10 is now complete. PDFs are generated on demand from the
+# eligibility_snapshot / grades_snapshot JSON columns — no file
+# persistence required, R2 wiring stays deferred. The pdf_url field
+# stores `inline:{version_id}` and routes stream bytes via reportlab.
+#
+# Next session unblocks the M3 rework (eligibility engine refactor +
+# 60%/85% threshold integration + freeze-deadline guards) followed by
+# M4 rework (assessment_schemes-driven marks computation, NPTEL grading,
+# SEE versioning consumed from M10e). After that: M11 assignments, M5
+# comms, M6 content, M9 admin/analytics.
 
 module_states:
 
@@ -612,15 +621,15 @@ module_states:
     next_session_picks_up_at: "After M10"
 
   M10_academic_workflow:
-    status: m10a_and_m10b_shipped
+    status: complete
     skeleton_live: true
-    scope: "NEW MODULE — see docs/modules/M10.md"
+    scope: "Workflow module COMPLETE across M10a–M10e — see docs/modules/M10.md"
     sub_sessions:
       a: "✅ shipped — Semester Setup CRUD + self-publish (HOD draft → active in one transaction); admin_notifications feed; HOD pages + admin notifications page; event bus publisher stub with stable payload contract"
       b: "✅ shipped — Registration window, student elective registration (idempotent), HOD elective dissolution + cascade (4 tables in one tx), manual single-student migration, capacity cap with by_registration_order / manual modes, dissolve preview (read-only blast radius), /student/dashboard + /student/registration + /hod/electives, /hod/dashboard under-subscribed callout"
-      c: "Lab Batches + Assessment Scheme Templates + per-offering picker"
-      d: "CIE Scheduling + Tasks + Internal Deadlines + Event Bus (Redis pub/sub, real subscriber side)"
-      e: "Hall Tickets + Grade Cards + SEE/Re-eval/Makeup workflows"
+      c: "✅ shipped — Lab batches (CRUD + bulk members + auto-compose round-robin + incharge assignments with HOD-override audit), per-offering scheme picker (template / clone / custom; AAT gating with academic_overrides on HOD-band; lock = teacher, unlock = HOD; integrated lab side inherits from parent), department-owned scheme templates, /hod/lab-batches + /hod/scheme-templates + /teacher/courses/[id]/scheme + /hod/dashboard scheme-readiness card"
+      d: "✅ shipped — Internal deadlines (institutional_hard/department_soft/per_course_freeze with kind-aware authority), CIE schedule per offering (HOD-publish + scheduled_at ordering CHECK), tasks (HOD assigns dept-only with pending → accepted/declined/completed/cancelled state machine), real Redis subscriber loop in app.core.event_bus with in-process handler registry, workflow.subscribers writes admin_notifications on internal_deadline.crossed, /hod/cie-schedule + /hod/tasks + /teacher/tasks + /admin/internal-deadlines"
+      e: "✅ shipped — Eligibility engine (attendance ≥85% from class_sessions + attendance_records; CIE ≥40% best-2-of-3 from M4 v1 marks; NPTEL waived), hall tickets (per-student + dept-batch generate + HOD approve + version regenerate + reportlab PDF stream), SEE CSV upload + supersede chain, re-evaluation (student request + HOD CSV upload with improve-or-hold rule), makeup (HOD authorize + CSV upload superseding prior current row), grade cards (auto-regenerate on SEE/re-eval/makeup with trigger_reason versions + SGPA + grade bands S/A/B/C/D/E/F/I), /hod/hall-tickets + /hod/see-upload + /hod/re-eval + /hod/makeup + /student/hall-ticket + /student/grade-card + /student/re-eval"
     m10a_shipped:
       schema:
         - "Migration 0010 — admin_notifications (id, college_id, event_type, payload jsonb, created_at, read_at). Index (college_id, created_at DESC)."
@@ -687,8 +696,96 @@ module_states:
         - "Manual into dissolved: rejected with target_dissolved. Reviving a dissolved option is out of scope."
         - "Preview auth: same require_hod_for_dept as dissolve. Same RBAC keeps the implementation simple."
         - "Notifications: emit student.migrated event only; M5 will wire user-facing notifications. M10b ships a temporary /student/dashboard banner for the migrated case that reads course_registrations.status directly."
+    m10c_shipped:
+      schema: "no new migration — M10c rides on the lab_batch_assignments / assessment_schemes / assessment_scheme_templates tables already in 0007."
+      backend:
+        - "services/api/app/modules/workflow/models.py — LabBatchAssignment ORM mapping (table from 0007)."
+        - "services/api/app/modules/workflow/service_m10c.py — new file. Lab batch CRUD; bulk members with one-batch-per-offering invariant; auto_compose_batches (round-robin from active section enrollments; existing assignments preserved; emits lab_batch.composed); add_assignment (one incharge per batch, HOD override unassigns prior + emits lab_batch.reassigned + writes academic_overrides[lab_batch_reassignment]); per-offering scheme get/replace/patch_component/lock/unlock; AAT gating (≤20% teacher-free, 20–40% HOD with academic_overrides[assessment_scheme_unlock] audit, >40% rejected — also pinned by the per-row CHECK in 0009); REPLACE soft-deletes old components and inserts new (preserves Marks audit trail); integrated lab side (parent_offering_id set) reads parent's scheme and rejects writes with scheme_inherited; offering roster helper for the UI picker; dept scheme template CRUD with DELETE refusal while in use (template_in_use)."
+        - "services/api/app/modules/workflow/router.py — extended with /workflow/course-offerings/{id}/lab-batches (+ /auto-compose, /roster), /workflow/lab-batches/{id}/{members,assignments}, /workflow/course-offerings/{id}/scheme/{lock,unlock,components/{cid}}, /workflow/scheme-templates (CRUD), /hod/scheme-readiness."
+        - "services/api/app/modules/workflow/schemas.py — M10c shapes: LabBatchOut + assignments + members; SchemeOut/SchemeReplace/SchemeComponentPatch/SchemeLockRequest/SchemeUnlockRequest with one-of-three input validation; SchemeTemplateOut/Create/Patch; SchemeReadinessOut; OfferingRosterEntry."
+      ui:
+        - "/hod/lab-batches — setup + offering picker (filters integrated/lab), batches table with member counts + incharge + co-evaluators, Add/Auto-compose buttons, Manage dialog (Members tab from offering roster picker + Assignments tab with incharge/co-eval add+unassign + rename form)."
+        - "/hod/scheme-templates — full template index with applies-to filter, institutional rows read-only, dept rows full CRUD; New + Use-as-base flows; live AAT-band and weight-total badges (amber at 20%, red at 40%); validation_rules JSON editor."
+        - "/teacher/courses/[id]/scheme — scheme view with AAT/weight/lock badges, Replace-from-template + Clone-from-offering + Custom-edit dialogs, per-component PATCH dialog with AAT hint, Lock dialog, Unlock dialog (HOD-only, reason required). Inherited child shows banner + parent link, all writes hidden."
+        - "/hod/dashboard — new Scheme-readiness card (counts + offerings table showing every unlocked-or-missing scheme with Configure deep-link)."
+        - "/hod/semester-setup/[id] — every course row gains Configure scheme + Lab batches deep-links."
+        - "/hod/electives — header gets Lab batches and Scheme templates quick-links."
+        - "/hod/layout.tsx — Lab batches + Scheme templates nav entries enabled."
+        - "/teacher/layout.tsx — accepts HOD role too so /hod/electives deep-links into /teacher/courses/{id}/scheme work."
+      tests: "services/api/tests/test_m10c.py — 15 critical paths (HOD batch on integrated; theory rejects with course_type_incompatible; one-batch-per-offering invariant; auto-compose round-robin distribution + event payload; teacher assigns own incharge + HOD overrides + academic_overrides[lab_batch_reassignment] row; teacher AAT >20% → 403 aat_requires_hod; HOD pushes AAT to 30% → academic_overrides[assessment_scheme_unlock]; AAT >40% always rejected; lock blocks edits, HOD unlock writes academic_overrides; dept template create + cross-role write blocked; template DELETE blocked while in use; integrated lab side rejects writes with scheme_inherited; REPLACE soft-deletes old components + inserts new IDs; assessment.scheme_configured + lab_batch.composed + lab_batch.reassigned payload shape conforms to AI_DEFERRAL_PLAN.md)."
+      authority_choices:
+        - "Lab batch writes: HOD-of-the-offering's-dept OR teacher == offering.teacher_user_id. Admin reads. Matches CLAUDE.md authority table: HOD composer with teacher composing own course, HOD overrides on top."
+        - "Scheme writes: teacher of offering OR HOD of dept. Admin is read-only for scheme. Aligns with the corrected mental model — teachers own their offering's scheme; HOD acts when an AAT extension or unlock is needed."
+        - "AAT gating implemented per-total: ≤20% (any actor); 20–40% (HOD only, writes academic_overrides[assessment_scheme_unlock] reason='HOD pushed AAT into 20–40% band'); >40% rejected for everyone — also enforced per-row by ck_scheme_comp_aat_max_40pct on the table."
+        - "Scheme REPLACE: existing scheme row is preserved (course_offerings.assessment_scheme_id never changes), components are soft-deleted and replaced. PATCH on a single component mutates in place to keep the marks audit shape stable. Re-using soft-deleted labels works because the partial unique index on (scheme_id, label) WHERE deleted_at IS NULL only counts live rows."
+        - "Integrated lab side (parent_offering_id IS NOT NULL): GET returns the parent's scheme with inherited_from_offering_id set; POST/PATCH/lock/unlock all 400 with code='scheme_inherited' and the parent offering id so the UI deep-links to the right page."
+        - "Dept templates: institutional templates (owner_department_id IS NULL) are read-only here (admin authoring deferred to M9). HOD-owned templates scoped to their dept. Cross-dept HODs cannot edit each other's templates. DELETE refuses with template_in_use while any AssessmentScheme.template_id still references the row."
+        - "Auto-compose roster: active section enrollments only (queries Enrollment by section_id + term filter, ignores course_registrations). Mandatory labs never write course_registrations rows, and elective labs always have a section enrollment created via the M10b cascade — so a single source-of-truth covers both."
+        - "Events: assessment.scheme_configured on replace/patch/lock/unlock; lab_batch.composed on auto-compose; lab_batch.reassigned only when a new incharge displaces an existing one. All emit AFTER commit via app.core.event_bus.publish (best-effort Redis + structured log; never raises)."
+      deferred_to_m10d_or_later:
+        - "Teacher-requests / HOD-approves token flow for AAT 20–40% — current path treats the HOD actor as the authoriser. Token request workflow can ride on top of the M10d tasks framework when needed."
+        - "Per-batch member listing endpoint — UI currently picks from the offering roster and trusts backend skips for already-placed students. A dedicated GET /lab-batches/{id}/members can land later."
+        - "Admin authoring of institutional templates — admin-side templates UI is M9 territory."
+    m10d_shipped:
+      schema: "no new migration — internal_deadlines / cie_schedule / tasks tables are all in 0007. M10d only adds ORM mappings."
+      backend:
+        - "services/api/app/modules/workflow/models.py — InternalDeadline (+ DeadlineKind enum-class for the VARCHAR kind column), CIESchedule, Task (+ TaskType, TaskStatus enums bound to the Postgres enum types from 0007)."
+        - "services/api/app/modules/workflow/service_m10d.py — new file. Internal deadline CRUD with kind-aware authority (admin owns institutional_hard, HOD owns department_soft for their dept, teacher owns per_course_freeze for own offering — HOD overrides). One row per scope (in-app uniqueness check). Freeze toggle emits internal_deadline.crossed AFTER commit; unfreeze is silent. is_offering_frozen(offering_id) helper + get_offering_freeze_status (M3/M4 rework consumers). CIE schedule create/patch/delete with HOD+teacher writers; HOD-only publish flip + scheduled_at ordering CHECK. Tasks: HOD assigns to dept teachers only (cross-dept rejected; outside_teacher in fixture proves this), pending → accepted/declined/completed/cancelled state machine, decline requires reason, only assigner+admin can cancel. Every transition emits task.assigned / task.status_changed."
+        - "services/api/app/modules/workflow/schemas.py — M10d shapes: InternalDeadlineOut/Create/Patch/FreezeRequest, CIEScheduleOut/Create/Patch, CIEPublishRequest, TaskOut/Create/StatusUpdate, OfferingFreezeStatus."
+        - "services/api/app/modules/workflow/router.py — extended with /workflow/internal-deadlines (CRUD + freeze + course-offerings/{id}/freeze-status), /workflow/course-offerings/{id}/cie-schedule (list + create + publish), /workflow/cie-schedule/{id} (patch + delete), /workflow/tasks (CRUD + status transitions)."
+        - "services/api/app/core/event_bus.py — subscriber side: on(event, handler) registry, start_subscriber()/stop_subscriber() + psubscribe('metis:events:*') loop with exponential backoff + cancellation handling. _dispatch is the test seam so the suite can exercise handlers without a live Redis pubsub roundtrip."
+        - "services/api/app/modules/workflow/subscribers.py — workflow-side handler registry. Currently wires handle_internal_deadline_crossed which writes an admin_notifications row in its own session (so a failed handler doesn't poison the API request transaction)."
+        - "services/api/app/main.py — lifespan integration: register_workflow_subscribers() + start_subscriber() on startup (skipped in APP_ENV=test), stop_subscriber() on shutdown."
+      ui:
+        - "/hod/cie-schedule — setup + offering picker, per-offering CIE-1/2/3 table with date/time/duration/room + inline edit, Publish-all / Unpublish-all button. Add buttons disabled when allPublished (and per-row edits/deletes disabled when the row itself is published)."
+        - "/hod/tasks — table of department tasks with status filter, New task dialog (teacher picker from /users list, type + title + description + due_at), Cancel button for pending/accepted rows."
+        - "/teacher/tasks — assignee view filtered by status, Accept/Decline (decline requires reason via dialog)/Complete buttons matching the state machine."
+        - "/admin/internal-deadlines — institutional hard-stops table (create dialog + freeze/unfreeze dialog), department_soft + per_course_freeze rows shown read-only for cross-cutting visibility. Empty-state amber callout when no institutional hard-stop exists."
+        - "/hod/layout.tsx — CIE schedule + Tasks nav entries enabled; /teacher/layout.tsx — Tasks entry added; /admin/layout.tsx — Internal deadlines entry added."
+      tests: "services/api/tests/test_m10d.py — 15 critical paths: admin owns institutional_hard / HOD blocked; HOD owns department_soft + other-dept rejected; teacher per_course_freeze + outside-teacher rejected; freeze emits internal_deadline.crossed + flips offering freeze status via dept-soft cone; duplicate kind rejected; teacher creates CIE + HOD publishes (teacher can't publish); CIE date ordering rejected with cie_out_of_order; published CIE can't be deleted; HOD assigns task to dept teacher; cross-dept assignment blocked; accept→complete chain + can't transition from completed; decline requires reason; only assigner can cancel; subscriber registry dispatches to registered handlers (capture + flaky handler proves error isolation); admin_notifications row materialised by the internal_deadline.crossed handler."
+      authority_choices:
+        - "Three deadline kinds, three authorities: institutional_hard = admin; department_soft = HOD of that dept; per_course_freeze = teacher of offering (HOD also). Patches/deletes/freezes follow the same matrix; frozen deadlines refuse patches (deadline_frozen 409) so the audit story stays linear — unfreeze before editing."
+        - "Freeze precedence (is_offering_frozen / get_offering_freeze_status): institutional_hard > department_soft > per_course_freeze. M3/M4 rework consumes this helper to gate attendance + marks edits."
+        - "CIE publish is HOD-only (matches CLAUDE.md authority table). Teachers can draft CIE-1/2/3 dates but only the HOD flips is_published. Published rows are protected from delete; HOD can still PATCH a published row in case of a venue swap."
+        - "Tasks stay inside the HOD's dept. Cross-dept assignment is rejected at the service layer (assignee must teach ≥1 offering in the actor's dept, or be the same dept's HOD). Same rule keeps the M9 reporting boundary clean."
+        - "Subscriber side: in-process handlers (via on() + the lifespan-started psubscribe loop) for low-latency reactions inside the API; cross-service consumers (M5/M7/M8) subscribe to the same Redis channels separately. Handler errors are logged but never propagate, so one broken handler doesn't take down the rest. APP_ENV=test skips the live loop so pytest doesn't dangle background tasks during teardown — tests call _dispatch directly to validate the contract."
+        - "internal_deadline.crossed is the only event with an in-app handler at M10d; the handler writes an admin_notifications row in a fresh session so a failure doesn't poison the API request that emitted the event. M5 will reuse the same plumbing for cross-role notification fan-out."
+      deferred_to_m10e_or_later:
+        - "Cron / scheduled scanner that auto-freezes deadlines when deadline_at passes — for now freeze is manual (admin or HOD flips the switch)."
+        - "Cross-dept resource conflict notifications (when CIE rooms collide) — admin_notifications schema is ready; the producer lands when M9 admin analytics ships."
+        - "Per-batch CIE schedules — current schedule is per-offering. Lab batches that run separate CIEs can be modelled later by allowing a lab_batch_id on cie_schedule rows."
+    m10e_shipped:
+      schema: "no new migration — hall_tickets / hall_ticket_versions / grade_cards / grade_card_versions / see_results / re_evaluations all came from 0007 + 0009. M10e only adds ORM mappings + a single dep (reportlab)."
+      backend:
+        - "services/api/app/modules/workflow/models.py — HallTicket, HallTicketVersion, GradeCard, GradeCardVersion, SEEResult (+ SEEResultKind enum), ReEvaluation ORMs."
+        - "services/api/app/modules/workflow/service_m10e.py — single consolidated file: eligibility engine (attendance % from ClassSession+AttendanceRecord; CIE % best-2-of-3 from M4 v1 Mark+Assessment; NPTEL auto-eligible); hall ticket service (per-student generate, dept-batch generate, HOD approve, version regenerate, idempotent snapshot compare); SEE service (CSV upload by USN with supersede chain); re-evaluation (student request gated on see_not_released + already_requested; HOD CSV upload with improve-or-hold rule that supersedes original on equal/higher); makeup service (HOD authorize → placeholder makeup row, then HOD CSV upload supersedes whatever is current); grade card service (per-(student, term) versions keyed by trigger_reason='initial'|'see_released'|'re_eval'|'makeup_completed'; per-subject internal+see+total% computation; SGPA from BMSCE 10-point grade bands; is_finalised when every subject has a non-pending grade); reportlab PDF rendering for hall tickets + grade cards from the snapshot JSON, so files aren't persisted and pdf_url stays a logical 'inline:{version_id}' identifier."
+        - "services/api/app/modules/workflow/schemas.py — HallTicket*/GradeCard*/SEEUpload*/ReEval*/Makeup* shapes plus the snapshot detail rows used by the UI."
+        - "services/api/app/modules/workflow/router.py — extended with /workflow/hall-tickets (list+generate+batch+approve+me+version PDF stream), /workflow/see-results (upload+list), /workflow/re-evaluations (student request + HOD upload + list), /workflow/makeup (authorize+upload), /workflow/grade-cards (generate+list+version PDF stream)."
+        - "services/api/pyproject.toml — added reportlab>=4.2.0 (pure Python, no native deps)."
+      ui:
+        - "/hod/hall-tickets — term picker, batch-generate button, per-student table with eligible/NA counts, multi-select approve, per-row PDF link."
+        - "/hod/see-upload — setup + offering picker, CSV textarea (USN,marks), max_marks input, results table showing every SEE row including superseded history."
+        - "/hod/re-eval — per-offering request queue with status/original/revised, CSV upload form for revised marks (improve-or-hold enforced by backend)."
+        - "/hod/makeup — failed-students table (current SEE < 40%) for authorization, then CSV upload form for makeup marks; makeup row supersedes whatever is current."
+        - "/student/hall-ticket — fetches /hall-tickets/me, shows latest version's per-subject snapshot with eligible/NA badges and reasons, current-version PDF download, version history list."
+        - "/student/grade-card — one card per term with subjects table (internal/SEE/total/grade), SGPA badge, finalised badge, version history with trigger_reason badge + per-version PDF download."
+        - "/student/re-eval — list of own re-eval requests with status/outcome, New-request dialog (course picker from /student/registration's mandatory courses + reason)."
+        - "Navs: /hod/layout.tsx — Hall tickets, SEE upload, Re-evaluation, Makeup enabled. /student/layout.tsx — Hall ticket, Grade card, Re-evaluation added."
+      tests: "services/api/tests/test_m10e.py — 17 critical paths: eligible / ineligible-attendance / ineligible-CIE / idempotent regenerate / PDF download streams application/pdf with %PDF magic / cross-student PDF forbidden / batch-generate + approve flow / SEE upload supersedes / SEE marks > max rejected / re-eval improve-or-hold (lower rejected, higher accepted) / re-eval without SEE rejected (see_not_released) / makeup authorize+upload supersedes / makeup without authorize rejected / grade card pending when no SEE / grade card auto-regenerates on SEE release with trigger_reason='see_released' and SGPA computed / student grade-card PDF streams / event payloads emitted (see.marks_released triggers grade_card.regenerated)."
+      authority_choices:
+        - "Hall tickets + grade cards: HOD generates and approves for own dept (admin sees but doesn't approve, per CLAUDE.md authority table). PDF download: students get their own; HOD gets own dept's; admin sees all."
+        - "PDF storage strategy: NO bytes are persisted. The eligibility_snapshot / grades_snapshot JSON column is the durable artifact; reportlab regenerates the PDF deterministically from the snapshot on every download. pdf_url stores `inline:{version_id}` so R2 wiring stays a future swap without schema churn."
+        - "Eligibility engine (BMSCE defaults): attendance ≥85% from closed class_sessions, CIE ≥40% best-2-of-3 from M4 v1 marks. NPTEL waived. The function signature is stable enough that the M3 rework can swap implementations without breaking M10e callers."
+        - "SEE / re-eval / makeup supersede chain: only one is_current SEE row per enrollment (enforced by the partial unique index). Re-evaluation enforces improve-or-hold strictly (lower revised → rejected, equal/higher → supersedes original). Makeup is a separate attempt and may legitimately produce a lower score; it supersedes whatever is current."
+        - "Grade card regeneration: triggered by the same actor (HOD) inside the SEE/re-eval/makeup transactions via regenerate_grade_card helper. Skipped silently when a student has no active enrollment. is_finalised flips to true once every subject has a non-pending grade — the M11 assignments AAT contribution will require a re-think when M4 rework lands."
+        - "Eligibility snapshots stringify all UUIDs (`str(course_offering_id)`) so the JSON serialiser doesn't trip; comparison for idempotent re-runs ignores generated_at + version_number so a no-op regenerate doesn't bump versions."
+      deferred_to_later:
+        - "AICTE compliance export (admin reports) — schema-ready; producer lands in M9."
+        - "Custom grade band overrides per college — currently hard-coded BMSCE bands; the M9 /admin/eligibility-config surface will read JSON config from a future colleges metadata column."
+        - "Multi-version grade card UI showing per-version snapshot diffs — current UI lists versions with download links; a v1-vs-v2 visual diff is M9 work."
+        - "R2 storage of PDFs — out of scope; current 'inline:{version_id}' URL means downloads always regenerate from the snapshot. When R2 wires up, a CDN-served signed URL replaces the inline identifier without ORM changes."
     blocked_by: none
-    next_session_picks_up_at: "M10c — Lab Batches + Assessment Scheme Templates + per-offering picker UI"
+    next_session_picks_up_at: "M10 complete. Next: M3 attendance rework (eligibility engine refactor + freeze guards), then M4 marks rework (scheme-driven computation + NPTEL + SEE chain consumption from M10e)."
 
   M11_assignments:
     status: not_started
@@ -741,13 +838,28 @@ frontend:
   teacher_shell: true
   student_shell: true   # M10b: Dashboard + Registration nav entries added
   parent_shell: true
-  hod_shell: true   # M10b: Electives nav entry enabled
+  hod_shell: true   # M10c: Lab batches + Scheme templates nav entries enabled
   admin_users_page: true   # shipped in M2 rework
   hod_semester_setup_pages: true   # shipped in M10a (index + editor)
   admin_notifications_page: true   # shipped in M10a
   student_dashboard_page: true   # shipped in M10b
   student_registration_page: true   # shipped in M10b
   hod_electives_page: true   # shipped in M10b
+  hod_lab_batches_page: true   # shipped in M10c
+  hod_scheme_templates_page: true   # shipped in M10c
+  teacher_course_scheme_page: true   # shipped in M10c (/teacher/courses/[id]/scheme)
+  hod_dashboard_scheme_readiness: true   # shipped in M10c
+  hod_cie_schedule_page: true   # shipped in M10d
+  hod_tasks_page: true   # shipped in M10d
+  teacher_tasks_page: true   # shipped in M10d
+  admin_internal_deadlines_page: true   # shipped in M10d
+  hod_hall_tickets_page: true   # shipped in M10e
+  hod_see_upload_page: true   # shipped in M10e
+  hod_re_eval_page: true   # shipped in M10e
+  hod_makeup_page: true   # shipped in M10e
+  student_hall_ticket_page: true   # shipped in M10e
+  student_grade_card_page: true   # shipped in M10e
+  student_re_eval_page: true   # shipped in M10e
 
 infrastructure:
   supabase_project_created: false
