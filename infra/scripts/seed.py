@@ -180,16 +180,47 @@ TODAY = NOW.date()
 
 
 # ── Institution shape ───────────────────────────────────────────────────────
+# Session 2 narrowed the demo to a single deep dept (CSE) + three stub
+# depts. Stubs exist so cross-department flows (HOD list, audit feed,
+# etc.) have non-trivial fixtures, but they carry only 1 batch × 1 section
+# × 5 students. The deep dept gets 4 batches × 2 sections × 30 students
+# (focal student in CSE 2023 section A still has full attendance/marks/
+# hall-ticket/grade-card history). Past walkthroughs ran 5,950 users +
+# 52K attendance rows; this scope cuts both by ~10×.
+#
+# SCOPE controls all per-dept dimensions in one place so future tweaks
+# don't have to chase magic numbers through the seed functions.
 # (code, name, three-char USN dept tag, sections-per-batch, teachers, courses)
 DEPT_SPECS: list[tuple[str, str, str, int, int]] = [
-    ("CSE",     "Computer Science & Engineering",          "CS", 3, 8),
-    ("ISE",     "Information Science & Engineering",       "IS", 3, 8),
-    ("ECE",     "Electronics & Communication Engineering", "EC", 2, 7),
-    ("CSE-DS",  "Computer Science & Engineering — Data Science", "CD", 2, 6),
-    ("AIML",    "Artificial Intelligence & Machine Learning",     "AI", 2, 6),
-    ("ME",      "Mechanical Engineering",                  "ME", 2, 6),
-    ("EEE",     "Electrical & Electronics Engineering",    "EE", 2, 6),
+    ("CSE",     "Computer Science & Engineering",          "CS", 2, 8),
+    ("ISE",     "Information Science & Engineering",       "IS", 1, 2),
+    ("ECE",     "Electronics & Communication Engineering", "EC", 1, 2),
+    ("CSE-DS",  "Computer Science & Engineering — Data Science", "CD", 1, 2),
 ]
+
+# Per-dept scope mode. "deep" → full workflow data; "stub" → minimal
+# rows for IA cross-references.
+SCOPE: dict[str, str] = {
+    "CSE": "deep",
+    "ISE": "stub",
+    "ECE": "stub",
+    "CSE-DS": "stub",
+}
+
+
+def is_deep(dept_code: str) -> bool:
+    return SCOPE.get(dept_code) == "deep"
+
+
+def students_per_section(dept_code: str) -> int:
+    return 30 if is_deep(dept_code) else 5
+
+
+def batch_years_for(dept_code: str) -> tuple[int, ...]:
+    """Deep depts span all 4 admission batches; stubs carry only the
+    focal year so the walkthrough has a face for each dept without
+    inflating row counts."""
+    return BATCH_YEARS if is_deep(dept_code) else (FOCAL_BATCH_YEAR,)
 
 # Course catalogue per department. Keep it real-sounding; mix types so the
 # seed exercises every assessment_scheme template + lab-batch flow.
@@ -297,59 +328,6 @@ COURSE_CATALOGUE: dict[str, list[tuple[str, str, int, int, str]]] = {
         _theory("505", "Time Series Analysis", 7, 3),
         _theory("601", "Project Phase-I", 8, 6),
     ],
-    "AIML": [
-        _theory("101", "Engineering Mathematics-I", 1, 4),
-        _theory("102", "Python Programming", 1, 3),
-        _theory("201", "Engineering Mathematics-II", 2, 4),
-        _integ("202", "Linear Algebra for ML", 3, 4),
-        _theory("301", "Foundations of AI", 5, 4),
-        _integ("302", "Machine Learning Lab", 5, 4),
-        _theory("303", "Knowledge Representation", 5, 3),
-        _nptel("304", "NPTEL — Elective", 5, 3),
-        _integ("401", "Deep Learning", 6, 4),
-        _theory("402", "Generative AI", 6, 3),
-        _theory("501", "AI Ethics & Society", 7, 3),
-        _integ("502", "Robotics & Reinforcement Learning", 7, 4),
-        _theory("503", "AI Systems Design", 7, 4),
-        _nptel("504", "NPTEL — Domain", 7, 3),
-        _theory("601", "Project Phase-I", 8, 6),
-    ],
-    "ME": [
-        _theory("101", "Engineering Mathematics-I", 1, 4),
-        _integ("102", "Engineering Mechanics", 1, 4),
-        _theory("201", "Engineering Mathematics-II", 2, 4),
-        _integ("202", "Manufacturing Processes", 3, 4),
-        _theory("203", "Thermodynamics", 3, 3),
-        _integ("301", "Fluid Mechanics", 5, 4),
-        _theory("302", "Machine Design", 5, 4),
-        _theory("303", "Heat Transfer", 5, 3),
-        _nptel("304", "NPTEL — Elective", 5, 3),
-        _integ("401", "Industrial Automation", 6, 4),
-        _theory("402", "Operations Research", 6, 3),
-        _theory("501", "Robotics", 7, 4),
-        _integ("502", "CAD/CAM", 7, 4),
-        _theory("503", "Renewable Energy Systems", 7, 3),
-        _nptel("504", "NPTEL — Domain", 7, 3),
-        _theory("601", "Project Phase-I", 8, 6),
-    ],
-    "EEE": [
-        _theory("101", "Engineering Mathematics-I", 1, 4),
-        _integ("102", "Basic Electrical Engineering", 1, 4),
-        _theory("201", "Engineering Mathematics-II", 2, 4),
-        _integ("202", "Network Theory", 3, 4),
-        _theory("203", "Electromagnetic Fields", 3, 3),
-        _integ("301", "Power Electronics", 5, 4),
-        _theory("302", "Control Systems", 5, 4),
-        _theory("303", "Electrical Machines", 5, 3),
-        _nptel("304", "NPTEL — Elective", 5, 3),
-        _integ("401", "Power Systems", 6, 4),
-        _theory("402", "Renewable Energy", 6, 3),
-        _theory("501", "Smart Grid", 7, 4),
-        _integ("502", "High Voltage Engineering", 7, 4),
-        _theory("503", "Industrial Drives", 7, 3),
-        _nptel("504", "NPTEL — Domain", 7, 3),
-        _theory("601", "Project Phase-I", 8, 6),
-    ],
 }
 
 # Admission batches. 2026-Odd is current; the focal cohort is 2023.
@@ -373,7 +351,9 @@ FUTURE_TERM_CODE = "2026-EVEN"
 FOCAL_BATCH_YEAR = 2023
 FOCAL_DEPT_CODE = "CSE"
 
-STUDENTS_PER_SECTION = 40
+# Per-section student counts are now scope-dependent — see SCOPE +
+# students_per_section() above. The old `STUDENTS_PER_SECTION = 40`
+# global is gone.
 
 # Coarse-grained permission catalogue — matches the v1 seed so existing
 # RBAC code keeps working.
@@ -628,7 +608,8 @@ async def seed_batches_sections(
     batches: dict[tuple[str, int], Batch] = {}
     sections: dict[tuple[str, int, str], Section] = {}
     for dept_code, _name, _tag, sec_count, _t in DEPT_SPECS:
-        for yr in BATCH_YEARS:
+        years = batch_years_for(dept_code)
+        for yr in years:
             current_sem = BATCH_SEM_AT_CURRENT_TERM[yr]
             b = Batch(
                 college_id=college_id,
@@ -641,7 +622,7 @@ async def seed_batches_sections(
             session.add(b)
             batches[(dept_code, yr)] = b
         await session.flush()
-        for yr in BATCH_YEARS:
+        for yr in years:
             section_names = ("A", "B", "C")[:sec_count]
             for sn in section_names:
                 s = Section(
@@ -810,12 +791,13 @@ async def seed_students_and_parents(
     students_by_section: dict[tuple[str, int, str], list[User]] = defaultdict(list)
 
     for dept_code, _name, usn_tag, _sec, _t in DEPT_SPECS:
-        for yr in BATCH_YEARS:
+        per_section = students_per_section(dept_code)
+        for yr in batch_years_for(dept_code):
             section_count = dict((d[0], d[3]) for d in DEPT_SPECS)[dept_code]
             section_names = ("A", "B", "C")[:section_count]
             roll = 0
             for sn in section_names:
-                for _ in range(STUDENTS_PER_SECTION):
+                for _ in range(per_section):
                     roll += 1
                     usn = make_usn(yr % 100, usn_tag, roll)
                     full_name, gender = student_name(RNG)
