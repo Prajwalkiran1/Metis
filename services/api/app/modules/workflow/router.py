@@ -99,9 +99,10 @@ from app.modules.workflow.schemas import (
     InternalDeadlinePatch,
     OfferingFreezeStatus,
     OfferingRosterEntry,
+    MyTaskAssignmentOut,
+    TaskAssignmentStatusUpdate,
     TaskCreate,
     TaskOut,
-    TaskStatusUpdate,
     ManualMigrateRequest,
     ManualMigrateResponse,
     Page,
@@ -1838,7 +1839,7 @@ async def publish_cie(
     return CIEPublishResponse.model_validate(d)
 
 
-# ── M10d: tasks ────────────────────────────────────────────────────────────
+# ── M10d: tasks (one-to-many after Session 3 audit migration 0013) ────────
 @workflow_router.get("/tasks", response_model=list[TaskOut])
 async def list_workflow_tasks(
     session: SessionDep,
@@ -1852,11 +1853,36 @@ async def list_workflow_tasks(
         )
     except service.WorkflowError as e:
         raise _to_http(e) from e
-    out = []
+    if not rows:
+        return []
+    task_ids = [r.id for r in rows]
+    assignment_map = await service_m10d._load_task_assignments(
+        session, task_ids=task_ids
+    )
+    out: list[TaskOut] = []
     for t in rows:
-        view = await service_m10d.task_to_dict(session, t)
+        view = await service_m10d.task_to_dict(
+            session, t, assignments=assignment_map.get(t.id, [])
+        )
         out.append(TaskOut.model_validate(view))
     return out
+
+
+@workflow_router.get(
+    "/task-assignments/mine", response_model=list[MyTaskAssignmentOut]
+)
+async def list_my_task_assignments(
+    session: SessionDep,
+    actor: CurrentUser,
+    status: str | None = Query(default=None),
+) -> list[MyTaskAssignmentOut]:
+    try:
+        rows = await service_m10d.list_my_task_assignments(
+            session, actor=actor, status=status
+        )
+    except service.WorkflowError as e:
+        raise _to_http(e) from e
+    return [MyTaskAssignmentOut.model_validate(r) for r in rows]
 
 
 @workflow_router.post(
@@ -1871,7 +1897,7 @@ async def create_workflow_task(
         t = await service_m10d.create_task(
             session,
             actor=actor,
-            assigned_to_user_id=payload.assigned_to_user_id,
+            assignee_user_ids=payload.assignee_user_ids,
             task_type=payload.task_type,
             title=payload.title,
             description=payload.description,
@@ -1886,19 +1912,19 @@ async def create_workflow_task(
 
 
 @workflow_router.post(
-    "/tasks/{task_id}/status", response_model=TaskOut
+    "/task-assignments/{assignment_id}/status", response_model=TaskOut
 )
-async def transition_task_status(
-    task_id: UUID,
-    payload: TaskStatusUpdate,
+async def transition_task_assignment_status(
+    assignment_id: UUID,
+    payload: TaskAssignmentStatusUpdate,
     session: SessionDep,
     actor: CurrentUser,
 ) -> TaskOut:
     try:
-        t = await service_m10d.update_task_status(
+        t, _ = await service_m10d.update_task_assignment_status(
             session,
             actor=actor,
-            task_id=task_id,
+            assignment_id=assignment_id,
             status=payload.status,
             decline_reason=payload.decline_reason,
         )

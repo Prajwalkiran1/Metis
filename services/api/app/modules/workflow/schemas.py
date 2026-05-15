@@ -677,23 +677,17 @@ class CIEPublishRequest(BaseModel):
     publish: bool = True
 
 
-# ── M10d: tasks ─────────────────────────────────────────────────────────────
-class TaskOut(BaseModel):
+# ── M10d: tasks (one-to-many after migration 0013) ─────────────────────────
+class TaskAssignmentOut(BaseModel):
+    """A per-assignee execution record. Multiple of these hang off
+    a single Task; assignees transition independently."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    assigned_by_user_id: UUID
-    assigned_by_name: str | None = None
-    assigned_to_user_id: UUID
-    assigned_to_name: str | None = None
-    task_type: Literal[
-        "invigilation", "paper_setting", "evaluation", "makeup_exam", "other"
-    ]
-    title: str
-    description: str | None = None
-    related_entity_type: str | None = None
-    related_entity_id: UUID | None = None
-    due_at: datetime | None = None
+    task_id: UUID
+    assignee_user_id: UUID
+    assignee_name: str | None = None
     status: Literal[
         "pending", "accepted", "declined", "completed", "cancelled"
     ]
@@ -703,8 +697,41 @@ class TaskOut(BaseModel):
     updated_at: datetime
 
 
+class TaskOut(BaseModel):
+    """Task header + the assignment list. The aggregate fields
+    (`status_counts`, `is_complete`) are derived from the assignment
+    rows at read time."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    assigned_by_user_id: UUID
+    assigned_by_name: str | None = None
+    task_type: Literal[
+        "invigilation", "paper_setting", "evaluation", "makeup_exam", "other"
+    ]
+    title: str
+    description: str | None = None
+    related_entity_type: str | None = None
+    related_entity_id: UUID | None = None
+    due_at: datetime | None = None
+    assignments: list[TaskAssignmentOut] = []
+    status_counts: dict[str, int] = {}
+    is_complete: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+
+class MyTaskAssignmentOut(TaskAssignmentOut):
+    """The teacher-side shape: the assignment row joined to its task
+    header so the UI can render row-per-assignment without a second
+    request per task."""
+
+    task: TaskOut
+
+
 class TaskCreate(BaseModel):
-    assigned_to_user_id: UUID
+    assignee_user_ids: list[UUID] = Field(min_length=1, max_length=20)
     task_type: Literal[
         "invigilation", "paper_setting", "evaluation", "makeup_exam", "other"
     ]
@@ -715,7 +742,7 @@ class TaskCreate(BaseModel):
     due_at: datetime | None = None
 
 
-class TaskStatusUpdate(BaseModel):
+class TaskAssignmentStatusUpdate(BaseModel):
     status: Literal["accepted", "declined", "completed", "cancelled"]
     decline_reason: str | None = Field(default=None, max_length=2000)
 

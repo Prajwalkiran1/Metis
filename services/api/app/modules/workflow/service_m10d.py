@@ -48,6 +48,7 @@ from app.modules.workflow.models import (
     CIESchedule,
     InternalDeadline,
     Task,
+    TaskAssignment,
     TaskStatus,
     TaskType,
 )
@@ -997,37 +998,30 @@ async def _get_task_or_404(
     return t
 
 
-async def create_task(
-    session: AsyncSession,
-    *,
-    actor: User,
-    assigned_to_user_id: UUID,
-    task_type: str,
-    title: str,
-    description: str | None,
-    related_entity_type: str | None,
-    related_entity_id: UUID | None,
-    due_at: datetime | None,
-) -> Task:
-    """HOD assigns to teachers in their dept (or HOD themselves, e.g.
-    paper-setting). Cross-dept assignment is rejected so the boundary
-    stays clean for M9 reporting.
-    """
-    _require_hod(actor)
-    assignee = await session.get(User, assigned_to_user_id)
+async def _validate_assignee_in_dept(
+    session: AsyncSession, *, actor: User, assignee_user_id: UUID
+) -> User:
+    """The cross-department guard: an HOD can only assign tasks to
+    teachers whose offerings live in their department, or to HODs of
+    the same department (which collapses to self). Raises
+    WorkflowError on any failure so create_task can fold per-assignee
+    validation into a single early-exit loop."""
+    assignee = await session.get(User, assignee_user_id)
     if (
         assignee is None
         or assignee.college_id != actor.college_id
         or assignee.deleted_at is not None
         or assignee.role not in (UserRole.teacher, UserRole.hod)
     ):
-        raise WorkflowError("bad_assignee", "assignee not found", 400)
-
-    # Restrict to assignees whose own offerings (or own HOD dept) match
-    # the actor's dept. The simplest, defensible check: the assignee must
-    # have at least one offering under the actor's dept OR be the HOD of
-    # the same dept.
-    if assignee.role == UserRole.hod and assignee.hod_of_department_id != actor.hod_of_department_id:
+        raise WorkflowError(
+            "bad_assignee",
+            f"assignee {assignee_user_id} not found or not a teacher/HOD",
+            400,
+        )
+    if (
+        assignee.role == UserRole.hod
+        and assignee.hod_of_department_id != actor.hod_of_department_id
+    ):
         raise WorkflowError(
             "cross_department",
             "cannot assign tasks to another department's HOD",
@@ -1052,25 +1046,74 @@ async def create_task(
                 "assignee teaches no offerings in your department",
                 403,
             )
+    return assignee
 
+
+async def create_task(
+    session: AsyncSession,
+    *,
+    actor: User,
+    assignee_user_ids: list[UUID],
+    task_type: str,
+    title: str,
+    description: str | None,
+    related_entity_type: str | None,
+    related_entity_id: UUID | None,
+    due_at: datetime | None,
+) -> Task:
+    """HOD assigns a task to N teachers/HODs in their dept. Each assignee
+    gets their own TaskAssignment row so they transition independently.
+    Cross-dept assignment is rejected per-assignee in one early-exit
+    pass — the whole creation rolls back if any assignee fails the
+    check.
+    """
+    _require_hod(actor)
+    if not assignee_user_ids:
+        raise WorkflowError(
+            "bad_assignee", "at least one assignee is required", 400
+        )
+    # De-dupe while preserving order so the audit row + events are stable.
+    seen: set[UUID] = set()
+    unique_ids: list[UUID] = []
+    for aid in assignee_user_ids:
+        if aid in seen:
+            continue
+        seen.add(aid)
+        unique_ids.append(aid)
+    assignees: list[User] = []
+    for aid in unique_ids:
+        assignees.append(
+            await _validate_assignee_in_dept(
+                session, actor=actor, assignee_user_id=aid
+            )
+        )
     try:
         kind = TaskType(task_type)
     except ValueError as e:
-        raise WorkflowError("bad_task_type", f"unknown task_type '{task_type}'", 400) from e
+        raise WorkflowError(
+            "bad_task_type", f"unknown task_type '{task_type}'", 400
+        ) from e
 
     t = Task(
         college_id=actor.college_id,
         assigned_by_user_id=actor.id,
-        assigned_to_user_id=assigned_to_user_id,
         task_type=kind,
         title=title.strip(),
         description=description,
         related_entity_type=related_entity_type,
         related_entity_id=related_entity_id,
         due_at=due_at,
-        status=TaskStatus.pending,
     )
     session.add(t)
+    await session.flush()
+    for aid in unique_ids:
+        session.add(
+            TaskAssignment(
+                task_id=t.id,
+                assignee_user_id=aid,
+                status=TaskStatus.pending,
+            )
+        )
     await session.flush()
     await write_audit(
         session,
@@ -1080,7 +1123,7 @@ async def create_task(
         actor_user_id=actor.id,
         college_id=actor.college_id,
         new_value={
-            "assigned_to_user_id": str(assigned_to_user_id),
+            "assignee_user_ids": [str(a) for a in unique_ids],
             "task_type": task_type,
             "title": t.title,
         },
@@ -1092,7 +1135,7 @@ async def create_task(
         {
             "task_id": str(t.id),
             "assigned_by_user_id": str(actor.id),
-            "assigned_to_user_id": str(assigned_to_user_id),
+            "assignee_user_ids": [str(a) for a in unique_ids],
             "task_type": task_type,
             "title": t.title,
             "due_at": due_at.isoformat() if due_at else None,
@@ -1103,6 +1146,27 @@ async def create_task(
     return t
 
 
+async def _load_task_assignments(
+    session: AsyncSession, *, task_ids: list[UUID]
+) -> dict[UUID, list[TaskAssignment]]:
+    """Bulk-load active assignments for a batch of tasks. Returns a
+    map task_id → list[TaskAssignment] ordered by created_at ASC."""
+    if not task_ids:
+        return {}
+    rows = await session.execute(
+        select(TaskAssignment)
+        .where(
+            TaskAssignment.task_id.in_(task_ids),
+            TaskAssignment.deleted_at.is_(None),
+        )
+        .order_by(TaskAssignment.created_at.asc())
+    )
+    out: dict[UUID, list[TaskAssignment]] = {}
+    for a in rows.scalars().all():
+        out.setdefault(a.task_id, []).append(a)
+    return out
+
+
 async def list_tasks(
     session: AsyncSession,
     *,
@@ -1110,34 +1174,46 @@ async def list_tasks(
     mode: Literal["mine", "assigned_by_me", "department", "all"] = "mine",
     status: str | None = None,
 ) -> list[Task]:
-    """`mine` = assigned_to actor; `assigned_by_me` = assigned_by actor;
-    `department` = HOD's view of all dept teachers; `all` = admin-only.
+    """`mine` = tasks where the actor is one of the assignees;
+    `assigned_by_me` = tasks the actor assigned; `department` = HOD's
+    view of own + dept assignees; `all` = admin-only.
+
+    Status filter operates on the assignment level: a task is included
+    if at least one of its active assignments matches.
     """
     stmt = select(Task).where(
         Task.college_id == actor.college_id,
         Task.deleted_at.is_(None),
     )
     if mode == "mine":
-        stmt = stmt.where(Task.assigned_to_user_id == actor.id)
+        my_task_ids = select(TaskAssignment.task_id).where(
+            TaskAssignment.assignee_user_id == actor.id,
+            TaskAssignment.deleted_at.is_(None),
+        )
+        stmt = stmt.where(Task.id.in_(my_task_ids))
     elif mode == "assigned_by_me":
         stmt = stmt.where(Task.assigned_by_user_id == actor.id)
     elif mode == "department":
         if actor.role != UserRole.hod or actor.hod_of_department_id is None:
             raise WorkflowError("forbidden", "HOD only", 403)
-        # Department mode: tasks the HOD assigned OR tasks whose assignee
-        # belongs to the HOD's dept (via own offerings + HOD-self).
-        assignee_ids_q = select(CourseOffering.teacher_user_id).join(
+        dept_teacher_ids = select(CourseOffering.teacher_user_id).join(
             Course, Course.id == CourseOffering.course_id
         ).where(
             Course.department_id == actor.hod_of_department_id,
             CourseOffering.college_id == actor.college_id,
             CourseOffering.deleted_at.is_(None),
         )
+        dept_assignee_tasks = select(TaskAssignment.task_id).where(
+            TaskAssignment.deleted_at.is_(None),
+            or_(
+                TaskAssignment.assignee_user_id.in_(dept_teacher_ids),
+                TaskAssignment.assignee_user_id == actor.id,
+            ),
+        )
         stmt = stmt.where(
             or_(
                 Task.assigned_by_user_id == actor.id,
-                Task.assigned_to_user_id.in_(assignee_ids_q),
-                Task.assigned_to_user_id == actor.id,
+                Task.id.in_(dept_assignee_tasks),
             )
         )
     elif mode == "all":
@@ -1145,35 +1221,136 @@ async def list_tasks(
             raise WorkflowError("forbidden", "admin only", 403)
     if status is not None:
         try:
-            stmt = stmt.where(Task.status == TaskStatus(status))
+            status_enum = TaskStatus(status)
         except ValueError as e:
-            raise WorkflowError("bad_status", f"unknown status '{status}'", 400) from e
+            raise WorkflowError(
+                "bad_status", f"unknown status '{status}'", 400
+            ) from e
+        matching_tasks = select(TaskAssignment.task_id).where(
+            TaskAssignment.deleted_at.is_(None),
+            TaskAssignment.status == status_enum,
+        )
+        stmt = stmt.where(Task.id.in_(matching_tasks))
 
     rows = await session.execute(stmt.order_by(Task.created_at.desc()))
     return list(rows.scalars().all())
 
 
-async def task_to_dict(session: AsyncSession, t: Task) -> dict[str, Any]:
+async def task_to_dict(
+    session: AsyncSession,
+    t: Task,
+    *,
+    assignments: list[TaskAssignment] | None = None,
+) -> dict[str, Any]:
+    """Serialise a task header + its assignment list. The caller passes
+    a pre-loaded `assignments` list to avoid an N+1 query in the list
+    path; otherwise we fetch them here."""
+    if assignments is None:
+        loaded = await _load_task_assignments(session, task_ids=[t.id])
+        assignments = loaded.get(t.id, [])
     assigned_by = await session.get(User, t.assigned_by_user_id)
-    assigned_to = await session.get(User, t.assigned_to_user_id)
+    assignment_dicts: list[dict[str, Any]] = []
+    status_counts: dict[str, int] = {}
+    for a in assignments:
+        assignee = await session.get(User, a.assignee_user_id)
+        status_str = (
+            a.status.value if hasattr(a.status, "value") else str(a.status)
+        )
+        status_counts[status_str] = status_counts.get(status_str, 0) + 1
+        assignment_dicts.append(
+            {
+                "id": a.id,
+                "task_id": a.task_id,
+                "assignee_user_id": a.assignee_user_id,
+                "assignee_name": assignee.name if assignee else None,
+                "status": status_str,
+                "status_updated_at": a.status_updated_at,
+                "decline_reason": a.decline_reason,
+                "created_at": a.created_at,
+                "updated_at": a.updated_at,
+            }
+        )
+    is_complete = bool(assignments) and all(
+        (a.status.value if hasattr(a.status, "value") else str(a.status))
+        in ("completed", "declined", "cancelled")
+        for a in assignments
+    )
     return {
         "id": t.id,
         "assigned_by_user_id": t.assigned_by_user_id,
         "assigned_by_name": assigned_by.name if assigned_by else None,
-        "assigned_to_user_id": t.assigned_to_user_id,
-        "assigned_to_name": assigned_to.name if assigned_to else None,
-        "task_type": t.task_type.value if hasattr(t.task_type, "value") else str(t.task_type),
+        "task_type": (
+            t.task_type.value if hasattr(t.task_type, "value") else str(t.task_type)
+        ),
         "title": t.title,
         "description": t.description,
         "related_entity_type": t.related_entity_type,
         "related_entity_id": t.related_entity_id,
         "due_at": t.due_at,
-        "status": t.status.value if hasattr(t.status, "value") else str(t.status),
-        "status_updated_at": t.status_updated_at,
-        "decline_reason": t.decline_reason,
+        "assignments": assignment_dicts,
+        "status_counts": status_counts,
+        "is_complete": is_complete,
         "created_at": t.created_at,
         "updated_at": t.updated_at,
     }
+
+
+async def list_my_task_assignments(
+    session: AsyncSession,
+    *,
+    actor: User,
+    status: str | None = None,
+) -> list[dict[str, Any]]:
+    """Teacher-side flat view: one row per assignment-for-me, with the
+    task header joined inline so the UI doesn't need a second request
+    per row."""
+    stmt = (
+        select(TaskAssignment, Task)
+        .join(Task, Task.id == TaskAssignment.task_id)
+        .where(
+            TaskAssignment.assignee_user_id == actor.id,
+            TaskAssignment.deleted_at.is_(None),
+            Task.deleted_at.is_(None),
+            Task.college_id == actor.college_id,
+        )
+    )
+    if status is not None:
+        try:
+            status_enum = TaskStatus(status)
+        except ValueError as e:
+            raise WorkflowError(
+                "bad_status", f"unknown status '{status}'", 400
+            ) from e
+        stmt = stmt.where(TaskAssignment.status == status_enum)
+    rows = (await session.execute(stmt.order_by(Task.created_at.desc()))).all()
+    out: list[dict[str, Any]] = []
+    for assignment, task in rows:
+        # Reuse task_to_dict so the nested `task` field is shaped
+        # identically to the HOD-side list.
+        loaded = await _load_task_assignments(session, task_ids=[task.id])
+        task_dict = await task_to_dict(
+            session, task, assignments=loaded.get(task.id, [])
+        )
+        assignee = await session.get(User, assignment.assignee_user_id)
+        out.append(
+            {
+                "id": assignment.id,
+                "task_id": assignment.task_id,
+                "assignee_user_id": assignment.assignee_user_id,
+                "assignee_name": assignee.name if assignee else None,
+                "status": (
+                    assignment.status.value
+                    if hasattr(assignment.status, "value")
+                    else str(assignment.status)
+                ),
+                "status_updated_at": assignment.status_updated_at,
+                "decline_reason": assignment.decline_reason,
+                "created_at": assignment.created_at,
+                "updated_at": assignment.updated_at,
+                "task": task_dict,
+            }
+        )
+    return out
 
 
 _ALLOWED_TRANSITIONS = {
@@ -1185,32 +1362,52 @@ _ALLOWED_TRANSITIONS = {
 }
 
 
-async def update_task_status(
+async def update_task_assignment_status(
     session: AsyncSession,
     *,
     actor: User,
-    task_id: UUID,
+    assignment_id: UUID,
     status: str,
     decline_reason: str | None,
-) -> Task:
+) -> tuple[Task, TaskAssignment]:
+    """Per-assignment state transition. accept/decline/complete are
+    assignee-only; cancel is assigner-or-admin. Returns the updated
+    task + assignment so the caller can refresh the UI's aggregate
+    counts in one shot."""
+    assignment = await session.get(TaskAssignment, assignment_id)
+    if (
+        assignment is None
+        or assignment.deleted_at is not None
+    ):
+        raise WorkflowError("not_found", "assignment not found", 404)
     t = await _get_task_or_404(
-        session, task_id=task_id, college_id=actor.college_id
+        session, task_id=assignment.task_id, college_id=actor.college_id
     )
-    # Authority: assignee can accept/decline/complete; assigner can cancel.
     if status in ("accepted", "declined", "completed"):
-        if t.assigned_to_user_id != actor.id:
+        if assignment.assignee_user_id != actor.id:
             raise WorkflowError(
-                "forbidden", "only the assignee can transition this task", 403
+                "forbidden",
+                "only the assignee can transition this assignment",
+                403,
             )
     elif status == "cancelled":
-        if t.assigned_by_user_id != actor.id and actor.role != UserRole.admin:
+        if (
+            t.assigned_by_user_id != actor.id
+            and actor.role != UserRole.admin
+        ):
             raise WorkflowError(
                 "forbidden", "only the assigner or admin can cancel", 403
             )
     else:
-        raise WorkflowError("bad_status", f"cannot transition to '{status}'", 400)
+        raise WorkflowError(
+            "bad_status", f"cannot transition to '{status}'", 400
+        )
 
-    current = t.status.value if hasattr(t.status, "value") else str(t.status)
+    current = (
+        assignment.status.value
+        if hasattr(assignment.status, "value")
+        else str(assignment.status)
+    )
     if status not in _ALLOWED_TRANSITIONS.get(current, set()):
         raise WorkflowError(
             "bad_transition",
@@ -1222,26 +1419,33 @@ async def update_task_status(
             "reason_required", "declining a task requires a reason", 400
         )
 
-    t.status = TaskStatus(status)
-    t.status_updated_at = utcnow()
+    assignment.status = TaskStatus(status)
+    assignment.status_updated_at = utcnow()
     if status == "declined":
-        t.decline_reason = decline_reason
+        assignment.decline_reason = decline_reason
 
     await write_audit(
         session,
-        action=f"task.{status}",
-        entity_type="task",
-        entity_id=t.id,
+        action=f"task_assignment.{status}",
+        entity_type="task_assignment",
+        entity_id=assignment.id,
         actor_user_id=actor.id,
         college_id=actor.college_id,
-        new_value={"status": status, "decline_reason": decline_reason},
+        new_value={
+            "task_id": str(t.id),
+            "status": status,
+            "decline_reason": decline_reason,
+        },
     )
     await session.commit()
+    await session.refresh(assignment)
     await session.refresh(t)
     await publish_event(
         "task.status_changed",
         {
             "task_id": str(t.id),
+            "assignment_id": str(assignment.id),
+            "assignee_user_id": str(assignment.assignee_user_id),
             "status": status,
             "by_user_id": str(actor.id),
             "decline_reason": decline_reason,
@@ -1249,4 +1453,4 @@ async def update_task_status(
         college_id=actor.college_id,
         actor_user_id=actor.id,
     )
-    return t
+    return t, assignment
