@@ -31,6 +31,28 @@ type AttendanceRecord = {
   gps_distance_m: number | null;
 };
 
+// Audit Session 5 — eligibility summary
+type CourseType = "theory" | "lab" | "integrated" | "nptel";
+
+type CourseEligibility = {
+  course_offering_id: string;
+  course_code: string;
+  course_title: string;
+  course_type: CourseType;
+  attendance_percent: number;
+  cie_percent: number | null;
+  attendance_eligible: boolean;
+  cie_eligible: boolean;
+  overall_eligible: boolean;
+  reason: string | null;
+};
+
+type EligibilitySummary = {
+  academic_term_id: string | null;
+  academic_term_code: string | null;
+  courses: CourseEligibility[];
+};
+
 const DEVICE_KEY = "metis.device_fp";
 
 function deviceFingerprint(): string {
@@ -73,6 +95,7 @@ export default function StudentAttendancePage() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<AttendanceRecord | null>(null);
   const [submitErr, setSubmitErr] = useState<string | null>(null);
+  const [summary, setSummary] = useState<EligibilitySummary | null>(null);
 
   const reload = useCallback(async () => {
     setLoadErr(null);
@@ -83,6 +106,16 @@ export default function StudentAttendancePage() {
       setSessions(rows);
     } catch (e) {
       setLoadErr(e instanceof ApiError ? e.message : "failed to load");
+    }
+    // Audit Session 5 — eligibility cards. Non-fatal if it 404s for a
+    // student who has no active enrollment yet.
+    try {
+      const s = await api<EligibilitySummary>(
+        "/attendance/me/eligibility-summary",
+      );
+      setSummary(s);
+    } catch {
+      setSummary(null);
     }
   }, []);
 
@@ -128,6 +161,29 @@ export default function StudentAttendancePage() {
           face verification.
         </p>
       </header>
+
+      {summary && summary.courses.length > 0 ? (
+        <Card className="p-4">
+          <div className="mb-3 flex items-baseline justify-between">
+            <h2 className="text-sm font-semibold">
+              Eligibility this term
+              {summary.academic_term_code ? (
+                <span className="ml-2 text-xs font-normal text-zinc-500">
+                  {summary.academic_term_code}
+                </span>
+              ) : null}
+            </h2>
+            <span className="text-[11px] text-zinc-400">
+              Attendance ≥85% · CIE ≥40%
+            </span>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {summary.courses.map((c) => (
+              <EligibilityCard key={c.course_offering_id} c={c} />
+            ))}
+          </div>
+        </Card>
+      ) : null}
 
       <Card className="p-4">
         <h2 className="mb-3 text-sm font-semibold">Submit</h2>
@@ -197,6 +253,51 @@ export default function StudentAttendancePage() {
           </ul>
         )}
       </Card>
+    </div>
+  );
+}
+
+// ── Audit Session 5 — per-course eligibility card ─────────────────────────
+function EligibilityCard({ c }: { c: CourseEligibility }) {
+  const pct = c.attendance_percent;
+  const pctText = pct.toFixed(1) + "%";
+  const isNptel = c.course_type === "nptel";
+  return (
+    <div className="rounded border border-zinc-200 bg-white p-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="min-w-0">
+          <div className="truncate font-medium">{c.course_code}</div>
+          <div className="truncate text-xs text-zinc-500">{c.course_title}</div>
+        </div>
+        <Badge tone={c.overall_eligible ? "green" : "red"}>
+          {c.overall_eligible ? "eligible" : "ineligible"}
+        </Badge>
+      </div>
+      <div className="mt-3 flex items-baseline gap-3">
+        {isNptel ? (
+          <span className="text-sm text-zinc-600">NPTEL — eligibility waived</span>
+        ) : (
+          <>
+            <div className="text-2xl font-semibold tabular-nums">{pctText}</div>
+            <div className="text-[11px] text-zinc-500">attendance</div>
+          </>
+        )}
+      </div>
+      {!isNptel ? (
+        <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+          <Badge tone={c.attendance_eligible ? "green" : "red"}>
+            Attendance ≥85%{c.attendance_eligible ? " ✓" : " ✗"}
+          </Badge>
+          <Badge tone={c.cie_eligible ? "green" : "red"}>
+            CIE ≥40%
+            {c.cie_percent != null ? ` (${c.cie_percent.toFixed(1)}%)` : " (pending)"}
+            {c.cie_eligible ? " ✓" : " ✗"}
+          </Badge>
+        </div>
+      ) : null}
+      {c.reason ? (
+        <p className="mt-2 text-[11px] text-red-700">{c.reason}</p>
+      ) : null}
     </div>
   );
 }
