@@ -19,7 +19,11 @@ from app.modules.invites.router import router as invites_router
 from app.modules.marks.router import router as marks_router
 from app.modules.system.router import router as system_router
 from app.modules.users.router import router as users_router
-from app.modules.workflow.router import router as workflow_router
+from app.modules.workflow.router import (
+    admin_notifications_router,
+    hod_router,
+    workflow_router,
+)
 
 
 async def _rate_limit_handler(request, exc: RateLimitExceeded):
@@ -73,7 +77,9 @@ def create_app() -> FastAPI:
     app.include_router(academic_router, prefix=settings.api_v1_prefix)
     app.include_router(attendance_router, prefix=settings.api_v1_prefix)
     app.include_router(marks_router, prefix=settings.api_v1_prefix)
+    app.include_router(hod_router, prefix=settings.api_v1_prefix)
     app.include_router(workflow_router, prefix=settings.api_v1_prefix)
+    app.include_router(admin_notifications_router, prefix=settings.api_v1_prefix)
     return app
 
 

@@ -68,6 +68,44 @@ def _to_http(exc: service.AcademicError) -> HTTPException:
     )
 
 
+# ── Academic terms (read-only for now; admin CRUD lands with M9) ────────────
+@router.get("/academic-terms")
+async def list_academic_terms(
+    session: SessionDep,
+    actor: CurrentUser,
+) -> list[dict]:
+    """Return all non-deleted terms in the actor's college, newest first.
+
+    Read scope only — admin/HOD CRUD lives on the admin terms page in M9.
+    Returned shape is intentionally hand-rolled here so we don't have to
+    add a Pydantic schema just for a flat list.
+    """
+    from sqlalchemy import select as _select  # local to avoid top-level churn
+
+    from app.modules.academic.models import AcademicTerm
+
+    rows = (
+        await session.execute(
+            _select(AcademicTerm)
+            .where(
+                AcademicTerm.college_id == actor.college_id,
+                AcademicTerm.deleted_at.is_(None),
+            )
+            .order_by(AcademicTerm.created_at.desc())
+        )
+    ).scalars().all()
+    return [
+        {
+            "id": str(r.id),
+            "code": r.code,
+            "term_type": r.term_type.value,
+            "starts_on": r.starts_on.isoformat() if r.starts_on else None,
+            "ends_on": r.ends_on.isoformat() if r.ends_on else None,
+        }
+        for r in rows
+    ]
+
+
 # ── Departments ─────────────────────────────────────────────────────────────
 @router.post("/departments", response_model=DepartmentOut, status_code=201)
 async def create_department(
