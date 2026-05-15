@@ -517,20 +517,39 @@ git log -1 --format='%B'         # should NOT contain "Co-Authored-By: Claude" o
 
 ```yaml
 last_updated: "2026-05-15"
-active_module: audit_session_5_attendance_eligibility_surface
+active_module: audit_cycle_closed
 
-# Local DB head stays at 0014 — Session 5 is a pure consumer of the
-# existing M10e eligibility engine, no schema changes. Adds
-# GET /attendance/me/eligibility-summary plus per-course cards on the
-# student attendance page. Pytest suite at 182 (Session 1: +3 gating;
-# Session 2: +10 ad-hoc endpoint; Session 3: +3 net new task tests;
-# Session 4: +13 ranked-prefs cascade + 6 existing-tests-rewritten;
-# Session 5: +6 eligibility-summary tests). Boot order:
+# AUDIT CYCLE COMPLETE — Sessions 1-6 shipped. Local DB head is 0014
+# (course_registration_preferences from Session 4). Pytest baseline: 182
+# (Session 1: +3 gating; Session 2: +10 ad-hoc endpoint; Session 3: +3
+# net new task tests; Session 4: +13 ranked-prefs cascade + 6 existing-
+# tests-rewritten; Session 5: +6 eligibility-summary tests; Session 6:
+# UI-only, suite unchanged). Boot order:
 #   docker compose -f infra/docker/docker-compose.yml up -d
 #   cd services/api && uv run alembic upgrade head
 #
-# Audit Sessions 1–5 shipped. The audit rework plan lives in
-# AUDIT_FINDINGS.md at repo root; Session 6 closes the cycle.
+# What ships after the audit cycle:
+# - Visibility-gated hall tickets + grade cards (Session 1)
+# - Role-context badge across all 5 layouts (Session 1)
+# - Ad-hoc class session endpoints (extra/reschedule/room_change) + UI
+#   panel on /teacher/courses/[id] (Session 2)
+# - Narrowed seed (1 deep CSE + 3 stub depts, ~606 users) (Session 2)
+# - Tasks one-to-many (task_assignments table) (Session 3)
+# - Ranked elective preferences (course_registration_preferences table)
+#   with auto-cascade + needs_intervention queue (Session 4)
+# - Student attendance eligibility surface — /attendance/me/
+#   eligibility-summary + per-course cards on /student/attendance
+#   (Session 5)
+# - Session 6 IA polish: HOD dashboard year-tabbed cards + needs-attention
+#   pill, /hod/electives + /hod/lab-batches removed from sidebar (deep-
+#   linked from semester-setup instead), /teacher/dashboard with weekly
+#   timetable + offerings grid, distribution histogram on /teacher/marks.
+#
+# Next session unblocks the M3 rework (eligibility engine refactor +
+# 60%/85% threshold integration + freeze-deadline guards) followed by
+# M4 rework (assessment_schemes-driven marks computation, NPTEL grading,
+# SEE versioning consumed from M10e). The audit-rework cycle is now
+# closed — see AUDIT_FINDINGS.md for the historical plan.
 #
 # Audit closures from the walkthrough that needed no code:
 # - B1: teacher manual attendance already ships in /teacher/attendance
@@ -838,6 +857,47 @@ module_states:
     status: deferred
     scaffold_only: true
     note: "Empty FastAPI scaffold in services/insights-engine/ with /health. M3 face stub swappable. Build last."
+
+audit_session_6:
+  status: complete
+  date: "2026-05-15"
+  scope: "IA polish + docs closure — closes the audit cycle. See AUDIT_FINDINGS.md Session 6 (closes F11, F13 IA half, F14, F3, F10 partial)."
+  schema: "no migration — UI-only session."
+  frontend:
+    - "apps/web/app/hod/dashboard/page.tsx — flat 149-row teaching offerings table replaced with year-tabbed cards (grouped by extracted leading-year from academic_term). Tabs primitive from ui.tsx; tab labels show count per year. New red 'needs HOD attention' pill at the top fetched from /workflow/needs-intervention (count + link to /hod/electives). Per-card deep links: Open → /teacher/courses/{id}, Scheme → /teacher/courses/{id}/scheme."
+    - "apps/web/app/hod/layout.tsx — /hod/electives and /hod/lab-batches removed from the top-level sidebar. Both pages stay alive as implementations; the natural entry point is now /hod/semester-setup/[id] → 'Manage enrollment →' deep-link on each elective group + the existing 'Lab batches →' deep-link on each integrated/lab course row. F13 IA consolidation lands without losing functionality."
+    - "apps/web/app/hod/semester-setup/[id]/page.tsx — added 'Manage enrollment →' deep link in each elective group header (links to /hod/electives) so the IA path stays discoverable now that the sidebar entry is gone."
+    - "apps/web/app/teacher/dashboard/page.tsx — new page. Mon-Fri timetable grid (5 columns) showing this week's class_sessions fetched via /sessions?from=&to=. Each session card shows course_code (joined client-side from /course-offerings + /courses + /sections like /teacher/marks already does), section name, time range, and state badge. Prev / This week / Next buttons advance the Monday anchor in 7-day steps. Below the grid is a 'My offerings' card with one tile per offering — Open + Scheme deep-links."
+    - "apps/web/app/teacher/layout.tsx — Dashboard nav entry added at the top of the teacher sidebar."
+    - "apps/web/app/teacher/page.tsx — root redirect target switched from /teacher/attendance to /teacher/dashboard."
+    - "apps/web/app/teacher/marks/page.tsx — distribution histogram card added between the marks table and the CSV upload. Recharts BarChart binned into 10 evenly-sized slots on [0, max_marks]; counts use the live draft marks state so the chart updates as the teacher edits. Empty state when no marks entered yet; absent students excluded from the histogram but surfaced in the header counter. (F10 partial — student/marks already shipped LineChart + RadarChart + projection table earlier; the audit doc's complaint about 'visualisation not built' was stale for the student side, so Session 6 lights up the teacher side.)"
+  tests: "no backend changes — pytest stays at 182 passing. UI changes verified by tsc + manual review."
+  authority_choices:
+    - "OQ E — deferred frontend test infrastructure. Vitest + RTL is a separate hardening session per CLAUDE_HEADER guidance; Session 6 ships polish on top of the audit closes without scope creep."
+    - "Sidebar consolidation — /hod/electives + /hod/lab-batches stay alive as implementation surfaces with rich dialogs (dissolve/cap/manual-migrate/needs-intervention for electives; CRUD + members + auto-compose + assignments for lab batches). The IA fix is to remove the duplicate top-level entries and let users discover them via /hod/semester-setup/[id] — the natural entry point per elective group / integrated offering. Avoids a multi-week rewrite while still closing F13 + F14."
+    - "Teacher dashboard fetch — joins are client-side (same pattern /teacher/marks uses). No new backend endpoint; uses /sessions + /course-offerings + /courses + /sections + /users/me. Mon-Fri only; weekend classes don't fit the BMSCE pattern."
+    - "Marks distribution chart — 10 bins on [0, max_marks]. Top bin is right-inclusive so a perfect score lands on the rightmost bar; bins below 0 (defensive) clamp to bin 0. Uses live draft state so the chart updates as marks are entered (server stats stay as a separate footer for audit reference)."
+    - "Active module marker bumped to audit_cycle_closed — there is no Session 7. Next session focus is M3 attendance rework (eligibility engine refactor + freeze guards), with M4 marks rework (scheme-driven computation + NPTEL + SEE chain consumption) right after."
+  closed_audit_items:
+    - "F11 (HOD dashboard flat 149-row table) — closed. Year-tabbed cards + needs-attention pill."
+    - "F13 (electives as sub-feature of semester setup) — closed via IA consolidation (sidebar entry removed, deep-link from semester-setup remains)."
+    - "F14 (lab batches nested under integrated offerings) — closed via IA consolidation (sidebar entry removed; existing 'Lab batches →' deep-link on integrated course rows remains)."
+    - "F3 (teacher dashboard with weekly timetable) — closed. New /teacher/dashboard with Mon-Fri grid + offerings card; root redirect switched."
+    - "F10 (marks visualisations weak) — closed. Student side was already covered earlier (LineChart + RadarChart); teacher side now gets the distribution histogram on /teacher/marks."
+  audit_cycle_summary:
+    sessions_shipped: 6
+    closed_findings: ["B1", "B2", "B6", "B7", "B9", "B15", "F3", "F8", "F10", "F11", "F12 (partial)", "F13", "F14", "F16", "A3", "A8", "Finding 18", "Finding 19"]
+    migrations: ["0013 (task_assignments)", "0014 (course_registration_preferences)"]
+    pytest_total: 182
+    commits_ahead_of_origin: "~30 (awaiting review; not pushed)"
+  deferred_to_future_sessions:
+    - "Frontend test infrastructure (vitest + RTL) — separate hardening session."
+    - "localStorage → httpOnly cookie JWT migration (M1-hardening)."
+    - "Refresh-token reuse detection (M1-hardening)."
+    - "M3 attendance rework — eligibility engine refactor, condonation banner producer, 60% per-CIE attendance, freeze-deadline guards."
+    - "M4 marks rework — assessment_schemes-driven computation, NPTEL grading, SEE versioning consumed from M10e, removes grade_rules."
+    - "M5 comms, M6 content, M9 admin, M11 assignments — fresh module sessions per CLAUDE.md."
+    - "AI layer (M7/M8) — only when academic core stabilises."
 
 audit_session_5:
   status: complete

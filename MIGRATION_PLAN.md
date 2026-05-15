@@ -1168,3 +1168,120 @@ These tables exist as schema-ready stubs for later modules; not populated in M2 
 ---
 
 *Migration plan v1.0 — three additive-first migrations, each independently testable and reversible. Run sequentially with verification between steps.*
+
+---
+
+## POST-AUDIT REWORK ADDITIONS (Sessions 3 + 4)
+
+The audit-rework cycle (AUDIT_FINDINGS.md) shipped two additional migrations on
+top of the M2-rework baseline. Both are additive, independently reversible, and
+verified against the seeded BMSCE corpus.
+
+### Migration 0013 — `task_assignments` (audit Session 3)
+
+**Concern**: Split the M10d `tasks` row into a header + N per-assignee rows so
+real workflows (paper-setting committees, multi-invigilator CIEs) can be
+modelled. Audit finding B15.
+
+```sql
+CREATE TABLE task_assignments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  assignee_user_id UUID NOT NULL REFERENCES users(id),
+  status task_status NOT NULL DEFAULT 'pending',
+  status_updated_at TIMESTAMPTZ NULL,
+  decline_reason TEXT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  deleted_at TIMESTAMPTZ NULL
+);
+CREATE INDEX ix_task_assignments_task_id ON task_assignments(task_id);
+CREATE INDEX ix_task_assignments_assignee_user_id ON task_assignments(assignee_user_id);
+CREATE UNIQUE INDEX uq_task_assignments_task_assignee_active
+  ON task_assignments(task_id, assignee_user_id)
+  WHERE deleted_at IS NULL;
+```
+
+Backfill (one assignment row per existing task), then drop the per-assignee
+columns from `tasks` in the same migration:
+
+```sql
+INSERT INTO task_assignments (id, task_id, assignee_user_id, status, status_updated_at, decline_reason, created_at, updated_at, deleted_at)
+SELECT gen_random_uuid(), id, assigned_to_user_id, status, status_updated_at, decline_reason, created_at, updated_at, deleted_at
+FROM tasks WHERE deleted_at IS NULL;
+
+ALTER TABLE tasks DROP COLUMN assigned_to_user_id;
+ALTER TABLE tasks DROP COLUMN status;
+ALTER TABLE tasks DROP COLUMN status_updated_at;
+ALTER TABLE tasks DROP COLUMN decline_reason;
+```
+
+Verify: `services/api/alembic/verify/verify_0013.sql`.
+
+### Migration 0014 — `course_registration_preferences` (audit Session 4)
+
+**Concern**: Add ranked elective preferences (1st / 2nd / 3rd choice per
+student per elective group) to drive the auto-fallback cascade on
+dissolution. Audit findings B6 + B7. `course_registrations` stays untouched
+as the committed-enrolment table; this new table is pure intent.
+
+```sql
+CREATE TABLE course_registration_preferences (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  college_id UUID NOT NULL REFERENCES colleges(id),
+  semester_setup_id UUID NOT NULL REFERENCES semester_setups(id),
+  student_user_id UUID NOT NULL REFERENCES users(id),
+  elective_group_id UUID NOT NULL REFERENCES elective_groups(id),
+  elective_group_option_id UUID NOT NULL REFERENCES elective_group_options(id),
+  preference_rank SMALLINT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  deleted_at TIMESTAMPTZ NULL,
+  CHECK (preference_rank BETWEEN 1 AND 3)
+);
+CREATE INDEX ix_crp_student_setup
+  ON course_registration_preferences (student_user_id, semester_setup_id);
+CREATE INDEX ix_crp_option
+  ON course_registration_preferences (elective_group_option_id);
+CREATE UNIQUE INDEX uq_crp_student_group_rank_active
+  ON course_registration_preferences
+     (student_user_id, semester_setup_id, elective_group_id, preference_rank)
+  WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX uq_crp_student_group_option_active
+  ON course_registration_preferences
+     (student_user_id, semester_setup_id, elective_group_id, elective_group_option_id)
+  WHERE deleted_at IS NULL;
+```
+
+Backfill — every existing approved elective registration becomes a rank-1
+preference (migrated / cancelled / backlog rows are historical audit and
+intentionally not backfilled):
+
+```sql
+INSERT INTO course_registration_preferences (
+  id, college_id, semester_setup_id, student_user_id,
+  elective_group_id, elective_group_option_id,
+  preference_rank, created_at, updated_at, deleted_at
+)
+SELECT gen_random_uuid(), cr.college_id, cr.semester_setup_id, cr.student_user_id,
+       cr.elective_group_id, cr.elective_group_option_id,
+       1, cr.created_at, cr.updated_at, NULL
+FROM course_registrations cr
+WHERE cr.elective_group_id IS NOT NULL
+  AND cr.elective_group_option_id IS NOT NULL
+  AND cr.status = 'approved'
+  AND cr.deleted_at IS NULL;
+```
+
+Also adds the `'needs_intervention'` status string convention on
+`course_registrations.status` (no schema change — column is already
+VARCHAR(20)). New rows with this status carry `elective_group_option_id =
+NULL` and `course_id` reusing the dissolved option's course_id as a display
+placeholder.
+
+Verify: `services/api/alembic/verify/verify_0014.sql`.
+
+---
+
+*Audit additions: migrations 0013 and 0014. The audit rework plan lives in
+`AUDIT_FINDINGS.md` at repo root; the cycle is closed as of 2026-05-15.*
