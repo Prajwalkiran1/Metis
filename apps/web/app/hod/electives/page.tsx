@@ -79,15 +79,35 @@ type EnrollmentView = {
 
 type CascadeSummary = {
   students_migrated: number;
+  students_needing_intervention?: number;
   attendance_records_preserved: number;
   marks_preserved: number;
   lab_batch_memberships_removed: number;
   enrollment_rows_mutated: number;
   affected_offering_ids: string[];
-  per_student: { student_id: string; skipped?: string }[];
+  per_student: {
+    student_id: string;
+    skipped?: string;
+    to_option_id?: string | null;
+    to_rank?: number | null;
+    chain_depth?: number;
+    outcome?: "migrated" | "needs_intervention";
+  }[];
 };
 
 type DisplacedStudent = StudentMini;
+
+type NeedsInterventionEntry = {
+  course_registration_id: string;
+  student_user_id: string;
+  student_name: string;
+  student_usn: string | null;
+  elective_group_id: string;
+  elective_group_name: string;
+  dissolved_course_code: string;
+  dissolved_course_title: string;
+  raised_at: string;
+};
 
 function statusTone(
   s: "under_subscribed" | "over_subscribed" | "healthy",
@@ -108,12 +128,19 @@ const windowSchema = z
   });
 type WindowForm = z.infer<typeof windowSchema>;
 
+// Audit Session 4 — target_option_id removed. The cascade walks each
+// student's preference chain individually; HOD provides only the reason.
 const dissolveSchema = z.object({
-  target_option_id: z.string().uuid(),
   reason: z.string().min(1).max(2000),
   confirm: z.string().min(1),
 });
 type DissolveForm = z.infer<typeof dissolveSchema>;
+
+const resolveSchema = z.object({
+  to_option_id: z.string().uuid(),
+  reason: z.string().min(1).max(2000),
+});
+type ResolveForm = z.infer<typeof resolveSchema>;
 
 const capSchema = z.object({
   max_enrollment: z.coerce.number().int().min(1).max(1000),
@@ -158,6 +185,11 @@ export default function HodElectivesPage() {
   const [openCap, setOpenCap] = useState<OptionEnrollment | null>(null);
   const [displaced, setDisplaced] = useState<DisplacedStudent[] | null>(null);
   const [openMigrate, setOpenMigrate] = useState(false);
+  const [interventions, setInterventions] = useState<NeedsInterventionEntry[]>(
+    [],
+  );
+  const [openResolve, setOpenResolve] =
+    useState<NeedsInterventionEntry | null>(null);
 
   const windowForm = useForm<WindowForm>({
     resolver: zodResolver(windowSchema),
@@ -165,7 +197,11 @@ export default function HodElectivesPage() {
   });
   const dissolveForm = useForm<DissolveForm>({
     resolver: zodResolver(dissolveSchema),
-    defaultValues: { target_option_id: "", reason: "", confirm: "" },
+    defaultValues: { reason: "", confirm: "" },
+  });
+  const resolveForm = useForm<ResolveForm>({
+    resolver: zodResolver(resolveSchema),
+    defaultValues: { to_option_id: "", reason: "" },
   });
   const capForm = useForm<CapForm>({
     resolver: zodResolver(capSchema),
@@ -224,6 +260,17 @@ export default function HodElectivesPage() {
     }
   }, [egId]);
 
+  const reloadInterventions = useCallback(async () => {
+    try {
+      const v = await api<NeedsInterventionEntry[]>(
+        "/workflow/needs-intervention",
+      );
+      setInterventions(v);
+    } catch {
+      // Non-fatal — the main page should still load.
+    }
+  }, []);
+
   useEffect(() => {
     reloadSetups();
   }, [reloadSetups]);
@@ -233,6 +280,9 @@ export default function HodElectivesPage() {
   useEffect(() => {
     reloadEnrollment();
   }, [reloadEnrollment]);
+  useEffect(() => {
+    reloadInterventions();
+  }, [reloadInterventions]);
 
   // ── window save ──
   async function onSaveWindow(values: WindowForm) {
@@ -256,7 +306,7 @@ export default function HodElectivesPage() {
     }
   }
 
-  // ── dissolve ──
+  // ── dissolve (audit Session 4 — no target_option_id) ──
   async function onPreviewDissolve(values: DissolveForm) {
     if (!egId || !openDissolve) return;
     setBusy("preview");
@@ -266,10 +316,7 @@ export default function HodElectivesPage() {
         `/workflow/elective-groups/${egId}/options/${openDissolve.option_id}/dissolve/preview`,
         {
           method: "POST",
-          body: {
-            target_option_id: values.target_option_id,
-            reason: values.reason || "preview",
-          },
+          body: { reason: values.reason || "preview" },
         },
       );
       setPreviewSummary(summary);
@@ -293,18 +340,44 @@ export default function HodElectivesPage() {
         `/workflow/elective-groups/${egId}/options/${openDissolve.option_id}/dissolve`,
         {
           method: "POST",
-          body: {
-            target_option_id: values.target_option_id,
-            reason: values.reason,
-          },
+          body: { reason: values.reason },
         },
       );
       setOpenDissolve(null);
       setPreviewSummary(null);
       dissolveForm.reset();
       await reloadEnrollment();
+      await reloadInterventions();
     } catch (e) {
       setActionErr(e instanceof ApiError ? e.message : "dissolve failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // ── resolve a needs_intervention row ──
+  async function onResolveIntervention(values: ResolveForm) {
+    if (!openResolve) return;
+    setBusy("resolve");
+    setActionErr(null);
+    try {
+      await api(
+        `/workflow/elective-groups/${openResolve.elective_group_id}/resolve-needs-intervention`,
+        {
+          method: "POST",
+          body: {
+            student_id: openResolve.student_user_id,
+            to_option_id: values.to_option_id,
+            reason: values.reason,
+          },
+        },
+      );
+      setOpenResolve(null);
+      resolveForm.reset();
+      await reloadEnrollment();
+      await reloadInterventions();
+    } catch (e) {
+      setActionErr(e instanceof ApiError ? e.message : "resolve failed");
     } finally {
       setBusy(null);
     }
@@ -340,6 +413,7 @@ export default function HodElectivesPage() {
           redistribute_strategy: "",
         });
         await reloadEnrollment();
+        await reloadInterventions();
       }
     } catch (e) {
       setActionErr(e instanceof ApiError ? e.message : "cap failed");
@@ -560,7 +634,6 @@ export default function HodElectivesPage() {
                         className="text-xs text-red-600 underline"
                         onClick={() => {
                           dissolveForm.reset({
-                            target_option_id: "",
                             reason: "",
                             confirm: "",
                           });
@@ -619,6 +692,126 @@ export default function HodElectivesPage() {
           ))}
         </div>
       ) : null}
+
+      {/* ── Needs HOD attention (audit Session 4) ── */}
+      {interventions.length > 0 ? (
+        <Card className="overflow-x-auto border-red-300 bg-red-50">
+          <div className="border-b border-red-300 px-4 py-3 text-sm font-semibold text-red-900">
+            Needs HOD attention ({interventions.length})
+          </div>
+          <Table>
+            <thead>
+              <tr>
+                <Th>Student</Th>
+                <Th>Slot</Th>
+                <Th>Dissolved</Th>
+                <Th>Raised</Th>
+                <Th></Th>
+              </tr>
+            </thead>
+            <tbody>
+              {interventions.map((i) => (
+                <tr key={i.course_registration_id}>
+                  <Td>
+                    <div className="font-mono text-xs">{i.student_usn ?? "—"}</div>
+                    <div className="text-xs text-zinc-700">{i.student_name}</div>
+                  </Td>
+                  <Td>{i.elective_group_name}</Td>
+                  <Td>
+                    <div className="font-medium">{i.dissolved_course_code}</div>
+                    <div className="text-xs text-zinc-500">
+                      {i.dissolved_course_title}
+                    </div>
+                  </Td>
+                  <Td className="text-xs text-zinc-600">
+                    {new Date(i.raised_at).toLocaleString()}
+                  </Td>
+                  <Td>
+                    <button
+                      type="button"
+                      className="text-xs text-zinc-900 underline"
+                      onClick={() => {
+                        resolveForm.reset({ to_option_id: "", reason: "" });
+                        setActionErr(null);
+                        // Switch the eg-id picker so the resolve dialog's
+                        // option list reflects the right group.
+                        if (i.elective_group_id !== egId) {
+                          setEgId(i.elective_group_id);
+                        }
+                        setOpenResolve(i);
+                      }}
+                    >
+                      Resolve
+                    </button>
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        </Card>
+      ) : null}
+
+      {/* ── Resolve needs-intervention dialog ── */}
+      <Dialog
+        open={openResolve !== null}
+        onClose={() => setOpenResolve(null)}
+        title={
+          openResolve
+            ? `Resolve ${openResolve.student_name} (${openResolve.elective_group_name})`
+            : ""
+        }
+        footer={
+          <>
+            <Button
+              variant="secondary"
+              onClick={() => setOpenResolve(null)}
+              disabled={busy === "resolve"}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={resolveForm.handleSubmit(onResolveIntervention)}
+              disabled={busy === "resolve"}
+            >
+              {busy === "resolve" ? "Resolving…" : "Resolve"}
+            </Button>
+          </>
+        }
+      >
+        <form
+          className="space-y-3"
+          onSubmit={resolveForm.handleSubmit(onResolveIntervention)}
+        >
+          <p className="text-xs text-zinc-600">
+            Pick a surviving option for this student.{" "}
+            {openResolve
+              ? `Their original choice (${openResolve.dissolved_course_code}) was dissolved.`
+              : null}
+          </p>
+          <Field
+            label="To option"
+            error={resolveForm.formState.errors.to_option_id?.message}
+          >
+            <Select {...resolveForm.register("to_option_id")}>
+              <option value="">— select —</option>
+              {(enrollment?.options ?? [])
+                .filter((o) => !o.is_dissolved)
+                .map((o) => (
+                  <option key={o.option_id} value={o.option_id}>
+                    {o.course_code} — {o.course_title}
+                  </option>
+                ))}
+            </Select>
+          </Field>
+          <Field
+            label="Reason"
+            error={resolveForm.formState.errors.reason?.message}
+          >
+            <Input {...resolveForm.register("reason")} />
+          </Field>
+          {actionErr ? <ErrorText>{actionErr}</ErrorText> : null}
+        </form>
+      </Dialog>
 
       {/* ── Window dialog ── */}
       <Dialog
@@ -706,24 +899,11 @@ export default function HodElectivesPage() {
         }
       >
         <form className="space-y-3" onSubmit={(e) => e.preventDefault()}>
-          <Field
-            label="Migrate students to"
-            error={dissolveForm.formState.errors.target_option_id?.message}
-          >
-            <Select {...dissolveForm.register("target_option_id")}>
-              <option value="">— select —</option>
-              {(enrollment?.options ?? [])
-                .filter(
-                  (o) =>
-                    o.option_id !== openDissolve?.option_id && !o.is_dissolved,
-                )
-                .map((o) => (
-                  <option key={o.option_id} value={o.option_id}>
-                    {o.course_code} — {o.course_title}
-                  </option>
-                ))}
-            </Select>
-          </Field>
+          <p className="text-xs text-zinc-600">
+            Each student on this option will be walked through their ranked
+            preferences in registration order. Students whose preference chain
+            exhausts will end up in the &quot;Needs HOD attention&quot; queue.
+          </p>
           <Field
             label="Reason"
             error={dissolveForm.formState.errors.reason?.message}
@@ -737,6 +917,12 @@ export default function HodElectivesPage() {
               </p>
               <ul className="mt-1 list-disc pl-5 text-xs text-amber-900">
                 <li>{previewSummary.students_migrated} students migrated</li>
+                {(previewSummary.students_needing_intervention ?? 0) > 0 ? (
+                  <li className="font-semibold">
+                    {previewSummary.students_needing_intervention} student(s)
+                    will need HOD attention
+                  </li>
+                ) : null}
                 <li>
                   {previewSummary.attendance_records_preserved} attendance
                   records preserved (history)
@@ -751,6 +937,53 @@ export default function HodElectivesPage() {
                   rows mutated
                 </li>
               </ul>
+              {previewSummary.per_student.length > 0 ? (
+                <div className="mt-3 max-h-64 overflow-y-auto rounded border border-amber-300 bg-white">
+                  <Table>
+                    <thead>
+                      <tr>
+                        <Th>Student</Th>
+                        <Th>Outcome</Th>
+                        <Th>To rank</Th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {previewSummary.per_student.map((p) => {
+                        const targetOpt = enrollment?.options.find(
+                          (o) => o.option_id === p.to_option_id,
+                        );
+                        return (
+                          <tr key={p.student_id}>
+                            <Td className="font-mono text-xs">
+                              {p.student_id.slice(0, 8)}…
+                            </Td>
+                            <Td>
+                              {p.outcome === "needs_intervention" ? (
+                                <Badge tone="red">needs HOD attention</Badge>
+                              ) : p.skipped ? (
+                                <Badge tone="amber">{p.skipped}</Badge>
+                              ) : targetOpt ? (
+                                <span className="text-xs">
+                                  → {targetOpt.course_code}
+                                </span>
+                              ) : (
+                                <span className="text-xs text-zinc-500">—</span>
+                              )}
+                            </Td>
+                            <Td>
+                              {p.to_rank != null ? (
+                                <Badge tone="neutral">rank {p.to_rank}</Badge>
+                              ) : (
+                                "—"
+                              )}
+                            </Td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </Table>
+                </div>
+              ) : null}
             </Card>
           ) : null}
           <Field
