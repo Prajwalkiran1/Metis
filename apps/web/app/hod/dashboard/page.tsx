@@ -180,6 +180,10 @@ export default function HodDashboardPage() {
             (o) => !o.has_scheme || (!o.is_locked && o.has_scheme),
           ) ? (
             <div className="mt-3 overflow-x-auto">
+              <p className="mb-2 text-xs text-zinc-500">
+                Configuring a scheme opens the teacher-facing editor in HOD
+                context — you remain logged in as HOD.
+              </p>
               <Table>
                 <thead>
                   <tr>

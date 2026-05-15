@@ -70,7 +70,9 @@ export default function StudentHallTicketPage() {
       <Card className="p-4 text-sm text-zinc-600">
         <h1 className="text-lg font-semibold text-zinc-900">Hall ticket</h1>
         <p className="mt-2">
-          Your HOD hasn't generated a hall ticket for the current term yet.
+          Your HOD hasn't released your hall ticket for the current term yet.
+          Check back after the internal deadline closes — you'll see it here
+          once it's approved.
         </p>
       </Card>
     );

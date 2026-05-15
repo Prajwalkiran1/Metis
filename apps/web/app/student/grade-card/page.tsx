@@ -76,7 +76,8 @@ export default function StudentGradeCardPage() {
       <Card className="p-4 text-sm text-zinc-600">
         <h1 className="text-lg font-semibold text-zinc-900">Grade card</h1>
         <p className="mt-2">
-          No grade cards have been generated for you yet.
+          No grade cards have been finalised for you yet. A card becomes
+          visible here once your SEE results land and the term is graded.
         </p>
       </Card>
     );
