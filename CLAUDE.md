@@ -304,6 +304,7 @@ session.created                        M2           M3
 semester_setup.published               M10          M9 audit, M5 announce
 elective.dissolved                     M10          M3, M4, M11 cascades
 student.migrated                       M10          M3, M4, M11 cascades
+student.needs_intervention             M10          M5 notify (audit Session 4)
 lab_batch.composed                     M10          M3, M4
 lab_batch.reassigned                   M10          M3, M4, M5 notify
 assessment.scheme_configured           M10/M4       M9 audit
@@ -516,18 +517,21 @@ git log -1 --format='%B'         # should NOT contain "Co-Authored-By: Claude" o
 
 ```yaml
 last_updated: "2026-05-15"
-active_module: audit_session_3_tasks_one_to_many
+active_module: audit_session_4_ranked_elective_preferences
 
-# Local DB head is now 0013 — Session 3 ships the
-# task_assignments table + backfill + drops the per-assignee columns
-# from tasks. Pytest suite at 163 (Session 1: +3 gating; Session 2:
-# +10 ad-hoc endpoint; Session 3: +3 net new task tests after
-# rewriting the existing 5). Boot order:
+# Local DB head is now 0014 — Session 4 adds course_registration_preferences
+# (ranked elective intent, 1..3 per student per group) and backfills every
+# existing approved elective registration as rank-1. course_registrations
+# stays as the committed-enrolment surface; a new status string
+# 'needs_intervention' marks rows whose preference chain exhausted.
+# Pytest suite at 176 (Session 1: +3 gating; Session 2: +10 ad-hoc endpoint;
+# Session 3: +3 net new task tests; Session 4: +13 ranked-prefs cascade
+# tests + 6 existing-tests-rewritten). Boot order:
 #   docker compose -f infra/docker/docker-compose.yml up -d
 #   cd services/api && uv run alembic upgrade head
 #
-# Audit Sessions 1–3 shipped. The audit rework plan lives in
-# AUDIT_FINDINGS.md at repo root; Sessions 4–6 follow in order.
+# Audit Sessions 1–4 shipped. The audit rework plan lives in
+# AUDIT_FINDINGS.md at repo root; Sessions 5–6 follow in order.
 #
 # Audit closures from the walkthrough that needed no code:
 # - B1: teacher manual attendance already ships in /teacher/attendance
@@ -836,6 +840,47 @@ module_states:
     scaffold_only: true
     note: "Empty FastAPI scaffold in services/insights-engine/ with /health. M3 face stub swappable. Build last."
 
+audit_session_4:
+  status: complete
+  date: "2026-05-15"
+  scope: "Unified registration with ranked elective preferences — see AUDIT_FINDINGS.md Session 4 (closes B6 + B7)"
+  schema:
+    - "Migration 0014_course_registration_preferences — new table course_registration_preferences (id, college_id FK, semester_setup_id FK, student_user_id FK, elective_group_id FK, elective_group_option_id FK, preference_rank SMALLINT 1..3 CHECK, created_at, updated_at, deleted_at). Indexes: ix_crp_student_setup, ix_crp_option, partial unique uq_crp_student_group_rank_active (student, setup, group, rank) WHERE deleted_at IS NULL, partial unique uq_crp_student_group_option_active (no duplicate options across ranks within one group)."
+    - "Backfill: every existing course_registrations row with elective_group_id IS NOT NULL AND status='approved' becomes a rank-1 preference. Migrated/cancelled/backlog rows are intentionally not backfilled (they're audit, not intent). 87 rank-1 prefs inserted from existing approved electives on local DB."
+    - "course_registrations untouched — stays as the committed-enrolment surface. New status string 'needs_intervention' added by convention (column is VARCHAR(20), no enum change)."
+    - "verify_0014.sql checks: column list, partial unique indexes, ck_crp_rank_range CHECK, backfill row count, rank=4 rejection, duplicate-rank rejection."
+  backend:
+    - "workflow/models.py — new CourseRegistrationPreference ORM (TimestampedMixin + SoftDeleteMixin). Sibling of CourseRegistration; no relationship attribute back — kept flat."
+    - "workflow/schemas.py — replaced RegistrationChoice with GroupRankedChoice {elective_group_id, ranked_option_ids: list (1..3)}. Replaced RegistrationGroupView.chosen_option_id with preferences: list[PreferenceEntry]. Dropped target_option_id from DissolveRequest. Added CommittedCourseEntry / CommittedView / ResolveNeedsInterventionRequest. CascadeSummary gains students_needing_intervention. CapRequest.redistribute_to_option_id now optional. StudentRegistrationView.intervention_alert dict added."
+    - "workflow/service_m10b.py — full rewrite of registration + cascade core. submit_student_registration accepts ranked option lists, validates per-group dedup, capacity check on rank-1 only (rank-2/3 may be currently-full as fallbacks), idempotent replace of prior prefs (soft-delete + insert fresh; rank-1 course_registrations row preserves created_at). New _init_walker_state + _walk_preference_chain helpers. _write_needs_intervention_row inline-writes the placeholder course_registrations row + academic_overrides row when the chain exhausts. dissolve_option drops target_option_id; cascade walks each student's chain in FIFO order on the dying option, fanning to multiple targets. dissolve_option_preview re-runs the walker simulation to project per-student outcomes. cap_option_capacity accepts redistribute_to_option_id=None with by_registration_order strategy — displaced students walk their own chain. New get_committed_view feeds the closed-state unified table (mandatory + elective rows with status enrolled/migrated_from/needs_intervention). New list_dept_needs_intervention + resolve_needs_intervention. emit_student_needs_intervention publisher helper. student.migrated payload gains from_rank/to_rank/chain_depth (additive). elective.dissolved payload drops target_option_id, gains students_needing_intervention. New student.needs_intervention event."
+    - "workflow/router.py — DissolveRequest body no longer carries target_option_id; both /dissolve and /dissolve/preview accept it as a no-op marker so callers can still attach reason text to the preview if they want. /cap fans out student.needs_intervention events when the by_registration_order path produces them. POST /student/registration/electives accepts the new ranked shape. New GET /student/registration/committed → CommittedView. New GET /workflow/needs-intervention → list[NeedsInterventionEntry] (HOD-scoped). New POST /workflow/elective-groups/{eg_id}/resolve-needs-intervention → ManualMigrateResponse envelope (student.migrated event with reason='needs_intervention_resolved')."
+  tests:
+    - "test_m10b.py — 6 existing tests updated for the new request/response shapes; 13 new tests added: full 3-rank submit, rank-1-only back-compat, duplicate-option-within-group rejection, rank-2-dissolved rejection, rank-2-full allowed, idempotent re-submit with created_at preservation, cohort-splits-rank-2-cap-spills-to-rank-3 (the worked example), chain-exhausted → needs_intervention row + event, preview matches commit outcomes, cap-no-target-walks-chain, resolve_needs_intervention flips status to approved, backfilled-rank-1 drives dissolution into needs_intervention, committed view shows enrolled rows after window close."
+    - "Full suite: 176 passed (163 baseline + 13 net new)."
+  frontend:
+    - "apps/web/app/student/registration/page.tsx — full rewrite. State machine driven by window.is_open: OPEN renders mandatory table + per-group GroupPicker (3 dropdowns 1st/2nd/3rd, dedupe-within-group filter, capacity hints on options, dissolved options excluded entirely from dropdowns, rank-1 sets the only required slot). CLOSED fetches /student/registration/committed and renders a single 'My registered courses' table with status badges (enrolled / migrated from <X> / needs HOD attention). Submit form copy explicitly warns about the rank-1-only-no-fallback path."
+    - "apps/web/app/student/dashboard/page.tsx — new red intervention_alert banner variant rendered alongside the existing amber migration_alert. groups[].chosen_option_id → groups[].preferences in the local type."
+    - "apps/web/app/hod/electives/page.tsx — dissolve form drops target_option_id field; the dialog now explains the cascade walk semantics and renders a per-student projected-outcomes table in the preview card (badges for rank, badges for needs-intervention). New top-level 'Needs HOD attention' card listing every intervention row in the dept with a Resolve button that opens a dialog hitting /workflow/elective-groups/{eg}/resolve-needs-intervention. CascadeSummary type extended with students_needing_intervention + per_student outcome metadata."
+  seed:
+    - "infra/scripts/seed.py — CourseRegistrationPreference imported. register_focal_batch_electives now writes 1-3 ranked preferences per student (rank-1 follows the existing weighted distribution; rank-2/3 are deterministic shuffles of remaining options; ~20% of students set only rank-1, the rest set 2 or 3). The 3 pre-seeded migrated demo students get rank-1=dissolved + rank-2=survivor as their pref history. A new 4th demo student with rank-1=dissolved only seeds a needs_intervention row + matching course_registrations placeholder. Verified post-seed counts: 154 active preferences (65 rank-1 / 55 rank-2 / 34 rank-3), 4 migrated rows, 1 needs_intervention row."
+  authority_choices:
+    - "OQ D — new course_registration_preferences table. Cleaner separation between intent (preferences) and committed enrolment (course_registrations); cascade walks pure intent without re-using the well-tested approve-row semantics."
+    - "OQ G — fixed 3 ranks. CHECK 1..3 at the DB level. Documented as institutional policy; can be relaxed by widening the constraint if a future deployment requires more depth."
+    - "needs_intervention placement: new status string on course_registrations (VARCHAR(20), no enum change). Old approved row flips to 'migrated'; new row inserted with option_id=NULL and course_id reusing the dissolved option's course_id as a display placeholder. M9 reports and the student dashboard query the same table."
+    - "Rank-1-only student whose option dissolves → routes to needs_intervention (the student declined to set fallbacks; we never auto-pick on their behalf)."
+    - "Picker UI: 3 dropdowns per group (1st required, 2nd/3rd optional). Selecting an option at one rank removes it from the others within the group. Dissolved options excluded entirely from the dropdown menu; full options selectable as fallbacks at ranks 2/3 (disabled at rank 1)."
+    - "Cascade ordering: students on the dissolving option are walked in (course_registrations.created_at ASC, id ASC) order — FIFO on the dying option. Matches the existing by_registration_order tie-break and means the earliest registrant gets first dibs on rank-2."
+    - "Walker state seeds `used` from _option_enrollment_count per option (excluding the dissolving one). The counter increments live during the walk, so when rank-2 fills mid-cascade the next student lands on rank-3 deterministically. exclude_option_ids is singleton {from_opt.id} — we do not recurse into chained dissolutions."
+    - "student.migrated payload extended with from_rank/to_rank/chain_depth (additive — existing subscribers ignore). elective.dissolved drops target_option_id, gains students_needing_intervention. New student.needs_intervention event for the exhausted-chain path."
+    - "Capacity-cap displacement: explicit redistribute_to_option_id still works for the single-target case (legacy behaviour). With redistribute_to_option_id=None and strategy='by_registration_order', displaced students walk their own preference chain — same cascade semantics as dissolution, including needs_intervention fall-through."
+    - "Manual migrate stays unchanged. Resolving a needs_intervention row patches the existing row in place (preserves identity + created_at) instead of running _perform_student_migration, since there's no prior approved row to mutate."
+  closed_audit_items:
+    - "B6 (migrated elective not in registered courses list) — closed. The CLOSED-state unified view at /student/registration shows every committed course."
+    - "B7 (unified registration with ranked preferences) — closed. Ranked picker on OPEN, locked-in list on CLOSED, auto-cascade through chain on dissolution."
+  deferred_to_session_5_or_later:
+    - "Session 5: student attendance eligibility surface (consumes compute_subject_eligibility)."
+    - "Session 6: IA polish + docs closure (HOD dashboard year-tabbed cards, electives inline in semester-setup, lab batches nested under integrated offerings, teacher dashboard, marks charts)."
+
 audit_session_3:
   status: complete
   date: "2026-05-15"
@@ -996,7 +1041,7 @@ demo_seed_state:
     focal_cohort: "CSE 2023 batch (currently sem 7) has the deepest data: full setup + course offerings, ~26K attendance rows across past+current, CIE-1 marks for ~80% of students, full past-term marks + SEE + grade cards. Stub depts carry only minimal rows for the IA cross-references (HOD list, audit feed, etc.)."
     schemes: "3 institutional templates (Theory / Integrated / NPTEL Standard) + 2 dept templates (CSE programming-heavy, ECE lab-heavy). Each offering instantiates from the matching template. CSE-Sem7-Compiler-Design has AAT=30% with an `assessment_scheme_unlock` academic_override audit row."
     electives: "CSE Professional Elective III has 4 options — one healthy, one under-strength (HOD-dashboard callout), one dissolved with 3 migrated students. CSE-DS has its own Domain Elective II group."
-    workflow_data: "120 hall_tickets (HOD-approved), 120 grade_cards (one in v2 with trigger_reason='see_released' for the focal student #1), 98 see_results (96 originals + 2 re-eval revised), 2 re_evaluations (improved + held), 42 CIE schedule entries (CIE-1 + CIE-2 published), 9 tasks + 11 task_assignment rows (1 of those tasks has 3 assignees in mixed states post-Session-3), 8 internal_deadlines, 5 academic_overrides (condonations + scheme unlock + lab incharge + mark unlock + student migration), 11 admin_notifications."
+    workflow_data: "120 hall_tickets (HOD-approved), 120 grade_cards (one in v2 with trigger_reason='see_released' for the focal student #1), 98 see_results (96 originals + 2 re-eval revised), 2 re_evaluations (improved + held), 42 CIE schedule entries (CIE-1 + CIE-2 published), 9 tasks + 11 task_assignment rows (1 of those tasks has 3 assignees in mixed states post-Session-3), 8 internal_deadlines, 5 academic_overrides (condonations + scheme unlock + lab incharge + mark unlock + student migration), 11 admin_notifications. Session 4 adds: ~154 course_registration_preferences (65 rank-1 + 55 rank-2 + 34 rank-3 across focal cohort), 4 course_registrations.status='migrated' rows (3 demo cascade + 1 needs_intervention paired migrated), 1 course_registrations.status='needs_intervention' row (driving the HOD intervention queue on /hod/electives)."
     events: "Best-effort `publish()` calls fire for `semester_setup.published` (7 events) and `grade_card.regenerated` (1 event from the v2 trigger). The M10d subscriber writes admin_notifications when running; the seed also writes them directly so /admin/notifications has content even when Redis is offline."
   walkthrough_logins:
     password: "MetisDemo!2026"
