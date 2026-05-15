@@ -20,17 +20,32 @@ import {
   Th,
 } from "@/components/ui";
 
-type TaskRow = {
+type Status = "pending" | "accepted" | "declined" | "completed" | "cancelled";
+type TaskType =
+  | "invigilation"
+  | "paper_setting"
+  | "evaluation"
+  | "makeup_exam"
+  | "other";
+
+type AssignmentRow = {
   id: string;
-  assigned_by_user_id: string;
-  assigned_by_name: string | null;
-  task_type: "invigilation" | "paper_setting" | "evaluation" | "makeup_exam" | "other";
-  title: string;
-  description: string | null;
-  due_at: string | null;
-  status: "pending" | "accepted" | "declined" | "completed" | "cancelled";
+  task_id: string;
+  assignee_user_id: string;
+  assignee_name: string | null;
+  status: Status;
+  status_updated_at: string | null;
   decline_reason: string | null;
   created_at: string;
+  task: {
+    id: string;
+    assigned_by_user_id: string;
+    assigned_by_name: string | null;
+    task_type: TaskType;
+    title: string;
+    description: string | null;
+    due_at: string | null;
+  };
 };
 
 const declineSchema = z.object({
@@ -38,21 +53,20 @@ const declineSchema = z.object({
 });
 type DeclineForm = z.infer<typeof declineSchema>;
 
-function statusTone(s: TaskRow["status"]): "neutral" | "green" | "amber" | "red" {
-  if (s === "accepted") return "green";
-  if (s === "completed") return "green";
+function statusTone(s: Status): "neutral" | "green" | "amber" | "red" {
+  if (s === "accepted" || s === "completed") return "green";
   if (s === "pending") return "amber";
   if (s === "declined") return "red";
   return "neutral";
 }
 
 export default function TeacherTasksPage() {
-  const [tasks, setTasks] = useState<TaskRow[] | null>(null);
-  const [filter, setFilter] = useState<"" | TaskRow["status"]>("");
+  const [rows, setRows] = useState<AssignmentRow[] | null>(null);
+  const [filter, setFilter] = useState<"" | Status>("");
   const [err, setErr] = useState<string | null>(null);
   const [actionErr, setActionErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [openDecline, setOpenDecline] = useState<TaskRow | null>(null);
+  const [openDecline, setOpenDecline] = useState<AssignmentRow | null>(null);
 
   const declineForm = useForm<DeclineForm>({
     resolver: zodResolver(declineSchema),
@@ -61,10 +75,11 @@ export default function TeacherTasksPage() {
 
   const reload = useCallback(async () => {
     try {
-      const rows = await api<TaskRow[]>("/workflow/tasks", {
-        query: { mode: "mine", status: filter || undefined },
-      });
-      setTasks(rows);
+      const out = await api<AssignmentRow[]>(
+        "/workflow/task-assignments/mine",
+        { query: { status: filter || undefined } },
+      );
+      setRows(out);
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : "load failed");
     }
@@ -74,11 +89,15 @@ export default function TeacherTasksPage() {
     reload();
   }, [reload]);
 
-  async function transition(t: TaskRow, status: string, decline_reason?: string) {
-    setBusy(`${status}:${t.id}`);
+  async function transition(
+    row: AssignmentRow,
+    status: Status,
+    decline_reason?: string,
+  ) {
+    setBusy(`${status}:${row.id}`);
     setActionErr(null);
     try {
-      await api(`/workflow/tasks/${t.id}/status`, {
+      await api(`/workflow/task-assignments/${row.id}/status`, {
         method: "POST",
         body: { status, decline_reason },
       });
@@ -93,15 +112,17 @@ export default function TeacherTasksPage() {
   }
 
   if (err) return <ErrorText>{err}</ErrorText>;
-  if (tasks === null) return <Loading />;
+  if (rows === null) return <Loading />;
 
   return (
     <div className="space-y-5">
       <div>
         <h1 className="text-lg font-semibold text-zinc-900">My tasks</h1>
         <p className="text-sm text-zinc-500">
-          Tasks your HOD has assigned to you. Accept to commit; decline with a
-          reason if you can't. Once you've finished the work, mark it complete.
+          Assignments your HOD has given you. Each row is your own seat on a
+          task — other assignees on the same task transition independently.
+          Accept to commit; decline with a reason if you can't; once finished,
+          mark complete.
         </p>
       </div>
 
@@ -128,7 +149,7 @@ export default function TeacherTasksPage() {
       {actionErr ? <p className="text-sm text-red-600">{actionErr}</p> : null}
 
       <Card className="overflow-x-auto">
-        {tasks.length === 0 ? (
+        {rows.length === 0 ? (
           <p className="px-4 py-6 text-sm text-zinc-500">
             No tasks in this filter.
           </p>
@@ -140,39 +161,46 @@ export default function TeacherTasksPage() {
                 <Th>Type</Th>
                 <Th>From</Th>
                 <Th>Due</Th>
-                <Th>Status</Th>
+                <Th>My status</Th>
                 <Th></Th>
               </tr>
             </thead>
             <tbody>
-              {tasks.map((t) => (
-                <tr key={t.id}>
+              {rows.map((row) => (
+                <tr key={row.id}>
                   <Td>
-                    <div className="font-medium">{t.title}</div>
-                    {t.description ? (
+                    <div className="font-medium">{row.task.title}</div>
+                    {row.task.description ? (
                       <div className="max-w-[280px] truncate text-xs text-zinc-500">
-                        {t.description}
+                        {row.task.description}
+                      </div>
+                    ) : null}
+                    {row.decline_reason ? (
+                      <div className="mt-1 text-xs text-red-700">
+                        Your decline reason: {row.decline_reason}
                       </div>
                     ) : null}
                   </Td>
                   <Td>
-                    <Badge tone="neutral">{t.task_type}</Badge>
+                    <Badge tone="neutral">{row.task.task_type}</Badge>
                   </Td>
-                  <Td>{t.assigned_by_name ?? t.assigned_by_user_id}</Td>
+                  <Td>{row.task.assigned_by_name ?? row.task.assigned_by_user_id}</Td>
                   <Td className="text-zinc-600">
-                    {t.due_at ? new Date(t.due_at).toLocaleString() : "—"}
+                    {row.task.due_at
+                      ? new Date(row.task.due_at).toLocaleString()
+                      : "—"}
                   </Td>
                   <Td>
-                    <Badge tone={statusTone(t.status)}>{t.status}</Badge>
+                    <Badge tone={statusTone(row.status)}>{row.status}</Badge>
                   </Td>
                   <Td>
                     <div className="flex gap-2">
-                      {t.status === "pending" ? (
+                      {row.status === "pending" ? (
                         <>
                           <Button
                             size="sm"
-                            onClick={() => transition(t, "accepted")}
-                            disabled={busy === `accepted:${t.id}`}
+                            onClick={() => transition(row, "accepted")}
+                            disabled={busy === `accepted:${row.id}`}
                           >
                             Accept
                           </Button>
@@ -182,18 +210,18 @@ export default function TeacherTasksPage() {
                             onClick={() => {
                               declineForm.reset({ decline_reason: "" });
                               setActionErr(null);
-                              setOpenDecline(t);
+                              setOpenDecline(row);
                             }}
                           >
                             Decline
                           </Button>
                         </>
                       ) : null}
-                      {t.status === "accepted" ? (
+                      {row.status === "accepted" ? (
                         <Button
                           size="sm"
-                          onClick={() => transition(t, "completed")}
-                          disabled={busy === `completed:${t.id}`}
+                          onClick={() => transition(row, "completed")}
+                          disabled={busy === `completed:${row.id}`}
                         >
                           Mark complete
                         </Button>
@@ -210,7 +238,7 @@ export default function TeacherTasksPage() {
       <Dialog
         open={openDecline !== null}
         onClose={() => setOpenDecline(null)}
-        title={`Decline · ${openDecline?.title ?? ""}`}
+        title={`Decline · ${openDecline?.task.title ?? ""}`}
         footer={
           <>
             <Button
@@ -223,7 +251,8 @@ export default function TeacherTasksPage() {
             <Button
               variant="danger"
               onClick={declineForm.handleSubmit((v) =>
-                openDecline && transition(openDecline, "declined", v.decline_reason),
+                openDecline &&
+                transition(openDecline, "declined", v.decline_reason),
               )}
               disabled={busy?.startsWith("declined:") ?? false}
             >

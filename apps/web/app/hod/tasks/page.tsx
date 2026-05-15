@@ -21,18 +21,35 @@ import {
   Th,
 } from "@/components/ui";
 
+type Status = "pending" | "accepted" | "declined" | "completed" | "cancelled";
+type TaskType =
+  | "invigilation"
+  | "paper_setting"
+  | "evaluation"
+  | "makeup_exam"
+  | "other";
+
+type Assignment = {
+  id: string;
+  task_id: string;
+  assignee_user_id: string;
+  assignee_name: string | null;
+  status: Status;
+  status_updated_at: string | null;
+  decline_reason: string | null;
+};
+
 type TaskRow = {
   id: string;
   assigned_by_user_id: string;
   assigned_by_name: string | null;
-  assigned_to_user_id: string;
-  assigned_to_name: string | null;
-  task_type: "invigilation" | "paper_setting" | "evaluation" | "makeup_exam" | "other";
+  task_type: TaskType;
   title: string;
   description: string | null;
   due_at: string | null;
-  status: "pending" | "accepted" | "declined" | "completed" | "cancelled";
-  decline_reason: string | null;
+  assignments: Assignment[];
+  status_counts: Partial<Record<Status, number>>;
+  is_complete: boolean;
   created_at: string;
 };
 
@@ -43,7 +60,9 @@ type TeacherUser = {
 };
 
 const createSchema = z.object({
-  assigned_to_user_id: z.string().uuid(),
+  assignee_user_ids: z
+    .array(z.string().uuid())
+    .min(1, "pick at least one assignee"),
   task_type: z.enum([
     "invigilation",
     "paper_setting",
@@ -57,9 +76,8 @@ const createSchema = z.object({
 });
 type CreateForm = z.infer<typeof createSchema>;
 
-function statusTone(s: TaskRow["status"]): "neutral" | "green" | "amber" | "red" {
-  if (s === "accepted") return "green";
-  if (s === "completed") return "green";
+function statusTone(s: Status): "neutral" | "green" | "amber" | "red" {
+  if (s === "accepted" || s === "completed") return "green";
   if (s === "pending") return "amber";
   if (s === "declined") return "red";
   return "neutral";
@@ -68,16 +86,17 @@ function statusTone(s: TaskRow["status"]): "neutral" | "green" | "amber" | "red"
 export default function HodTasksPage() {
   const [tasks, setTasks] = useState<TaskRow[] | null>(null);
   const [teachers, setTeachers] = useState<TeacherUser[]>([]);
-  const [filter, setFilter] = useState<"" | TaskRow["status"]>("");
+  const [filter, setFilter] = useState<"" | Status>("");
   const [err, setErr] = useState<string | null>(null);
   const [actionErr, setActionErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [openCreate, setOpenCreate] = useState(false);
+  const [picked, setPicked] = useState<Record<string, boolean>>({});
 
   const createForm = useForm<CreateForm>({
     resolver: zodResolver(createSchema),
     defaultValues: {
-      assigned_to_user_id: "",
+      assignee_user_ids: [],
       task_type: "invigilation",
       title: "",
       description: "",
@@ -117,14 +136,28 @@ export default function HodTasksPage() {
     reloadTeachers();
   }, [reloadTeachers]);
 
+  function openCreateDialog() {
+    setPicked({});
+    createForm.reset();
+    setActionErr(null);
+    setOpenCreate(true);
+  }
+
   async function onCreate(values: CreateForm) {
+    const pickedIds = Object.entries(picked)
+      .filter(([, v]) => v)
+      .map(([k]) => k);
+    if (pickedIds.length === 0) {
+      setActionErr("pick at least one assignee");
+      return;
+    }
     setBusy("create");
     setActionErr(null);
     try {
       await api("/workflow/tasks", {
         method: "POST",
         body: {
-          assigned_to_user_id: values.assigned_to_user_id,
+          assignee_user_ids: pickedIds,
           task_type: values.task_type,
           title: values.title,
           description: values.description || undefined,
@@ -133,6 +166,7 @@ export default function HodTasksPage() {
       });
       setOpenCreate(false);
       createForm.reset();
+      setPicked({});
       await reload();
     } catch (e) {
       setActionErr(e instanceof ApiError ? e.message : "create failed");
@@ -141,11 +175,11 @@ export default function HodTasksPage() {
     }
   }
 
-  async function onCancel(t: TaskRow) {
-    setBusy(`cancel:${t.id}`);
+  async function onCancelAssignment(assignment: Assignment) {
+    setBusy(`cancel:${assignment.id}`);
     setActionErr(null);
     try {
-      await api(`/workflow/tasks/${t.id}/status`, {
+      await api(`/workflow/task-assignments/${assignment.id}/status`, {
         method: "POST",
         body: { status: "cancelled" },
       });
@@ -167,16 +201,17 @@ export default function HodTasksPage() {
           <h1 className="text-lg font-semibold text-zinc-900">Tasks</h1>
           <p className="text-sm text-zinc-500">
             Assign invigilation, paper-setting, evaluation, and makeup-exam
-            duties to teachers in your department. Cancel pending tasks here;
-            accept/decline/complete live on the teacher's task page.
+            duties to one or more teachers in your department. Each assignee
+            transitions their own row independently; you can cancel any
+            pending/accepted assignment from here.
           </p>
         </div>
-        <Button onClick={() => setOpenCreate(true)}>New task</Button>
+        <Button onClick={openCreateDialog}>New task</Button>
       </div>
 
       <Card className="p-3">
         <div className="flex gap-3">
-          <Field label="Status">
+          <Field label="Status (matches any assignee)">
             <Select
               value={filter}
               onChange={(e) =>
@@ -207,11 +242,10 @@ export default function HodTasksPage() {
               <tr>
                 <Th>Title</Th>
                 <Th>Type</Th>
-                <Th>Assigned to</Th>
                 <Th>Due</Th>
-                <Th>Status</Th>
+                <Th>Assignees</Th>
+                <Th>Aggregate</Th>
                 <Th>Created</Th>
-                <Th></Th>
               </tr>
             </thead>
             <tbody>
@@ -224,36 +258,62 @@ export default function HodTasksPage() {
                         {t.description}
                       </div>
                     ) : null}
-                    {t.decline_reason ? (
-                      <div className="mt-1 text-xs text-red-700">
-                        Declined: {t.decline_reason}
-                      </div>
-                    ) : null}
                   </Td>
                   <Td>
                     <Badge tone="neutral">{t.task_type}</Badge>
                   </Td>
-                  <Td>{t.assigned_to_name ?? t.assigned_to_user_id}</Td>
                   <Td className="text-zinc-600">
                     {t.due_at ? new Date(t.due_at).toLocaleString() : "—"}
                   </Td>
                   <Td>
-                    <Badge tone={statusTone(t.status)}>{t.status}</Badge>
+                    <div className="space-y-1.5">
+                      {t.assignments.map((a) => (
+                        <div
+                          key={a.id}
+                          className="flex items-center gap-2 text-xs"
+                        >
+                          <span className="text-zinc-900">
+                            {a.assignee_name ?? a.assignee_user_id.slice(0, 8)}
+                          </span>
+                          <Badge tone={statusTone(a.status)}>{a.status}</Badge>
+                          {a.decline_reason ? (
+                            <span
+                              className="text-red-700"
+                              title={a.decline_reason}
+                            >
+                              ({a.decline_reason.slice(0, 40)})
+                            </span>
+                          ) : null}
+                          {a.status === "pending" || a.status === "accepted" ? (
+                            <button
+                              type="button"
+                              className="text-red-700 underline disabled:text-zinc-400"
+                              disabled={busy === `cancel:${a.id}`}
+                              onClick={() => onCancelAssignment(a)}
+                            >
+                              cancel
+                            </button>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  </Td>
+                  <Td>
+                    <div className="flex flex-wrap gap-1">
+                      {(["pending", "accepted", "completed", "declined", "cancelled"] as Status[])
+                        .filter((s) => (t.status_counts[s] ?? 0) > 0)
+                        .map((s) => (
+                          <Badge key={s} tone={statusTone(s)}>
+                            {t.status_counts[s]} {s}
+                          </Badge>
+                        ))}
+                      {t.is_complete ? (
+                        <Badge tone="green">done</Badge>
+                      ) : null}
+                    </div>
                   </Td>
                   <Td className="text-zinc-500">
                     {new Date(t.created_at).toLocaleDateString()}
-                  </Td>
-                  <Td>
-                    {t.status === "pending" || t.status === "accepted" ? (
-                      <Button
-                        size="sm"
-                        variant="danger"
-                        onClick={() => onCancel(t)}
-                        disabled={busy === `cancel:${t.id}`}
-                      >
-                        Cancel
-                      </Button>
-                    ) : null}
                   </Td>
                 </tr>
               ))}
@@ -286,17 +346,40 @@ export default function HodTasksPage() {
       >
         <form className="space-y-3">
           <Field
-            label="Assign to"
-            error={createForm.formState.errors.assigned_to_user_id?.message}
+            label="Assignees (pick one or more)"
+            error={
+              Object.values(picked).every((v) => !v)
+                ? createForm.formState.errors.assignee_user_ids?.message
+                : undefined
+            }
           >
-            <Select {...createForm.register("assigned_to_user_id")}>
-              <option value="">— pick teacher —</option>
-              {teachers.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name} ({t.role})
-                </option>
-              ))}
-            </Select>
+            <div className="max-h-48 overflow-y-auto rounded border border-zinc-300 bg-white p-2 text-sm">
+              {teachers.length === 0 ? (
+                <p className="text-xs text-zinc-500">No teachers loaded.</p>
+              ) : (
+                teachers.map((t) => (
+                  <label
+                    key={t.id}
+                    className="flex items-center gap-2 py-0.5"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!!picked[t.id]}
+                      onChange={(e) =>
+                        setPicked((p) => ({ ...p, [t.id]: e.target.checked }))
+                      }
+                    />
+                    <span>
+                      {t.name}{" "}
+                      <span className="text-xs text-zinc-500">({t.role})</span>
+                    </span>
+                  </label>
+                ))
+              )}
+            </div>
+            <p className="mt-1 text-xs text-zinc-500">
+              {Object.values(picked).filter(Boolean).length} selected
+            </p>
           </Field>
           <Field
             label="Type"
