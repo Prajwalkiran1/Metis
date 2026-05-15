@@ -516,19 +516,18 @@ git log -1 --format='%B'         # should NOT contain "Co-Authored-By: Claude" o
 
 ```yaml
 last_updated: "2026-05-15"
-active_module: audit_session_1_visibility_gates
+active_module: audit_session_2_seed_narrow_and_ad_hoc_sessions
 
-# Local DB head stays at 0012 — M10e adds the last ORM mappings
-# (HallTicket/HallTicketVersion/GradeCard/GradeCardVersion/SEEResult/
-# ReEvaluation) on top of the 0007 schema plus a single new dependency
-# (reportlab) for PDF rendering. Pytest suite now at 150 (+3 from the
-# Session 1 gating tests). Boot order:
+# Local DB head stays at 0012 — Session 2 added the teacher/HOD ad-hoc
+# class session endpoints + UI without a migration; the schema already
+# covered all four TimetableExceptionKind values. Pytest suite at 160
+# (Session 1: +3 gating; Session 2: +10 ad-hoc endpoint coverage).
+# Boot order:
 #   docker compose -f infra/docker/docker-compose.yml up -d
 #   cd services/api && uv run alembic upgrade head
 #
-# Audit Session 1 (visibility gates + role-context indicator) is shipped
-# — see audit_session_1 block below. The audit rework plan lives in
-# AUDIT_FINDINGS.md at repo root; Sessions 2–6 follow in order.
+# Audit Sessions 1–2 shipped. The audit rework plan lives in
+# AUDIT_FINDINGS.md at repo root; Sessions 3–6 follow in order.
 #
 # Audit closures from the walkthrough that needed no code:
 # - B1: teacher manual attendance already ships in /teacher/attendance
@@ -837,6 +836,41 @@ module_states:
     scaffold_only: true
     note: "Empty FastAPI scaffold in services/insights-engine/ with /health. M3 face stub swappable. Build last."
 
+audit_session_2:
+  status: complete
+  date: "2026-05-15"
+  scope: "Seed scope narrow + teacher/HOD ad-hoc class sessions — see AUDIT_FINDINGS.md Session 2"
+  backend:
+    - "academic/service.py — new functions: create_extra_class_session, create_reschedule_exception, create_room_change_exception, list_offering_exceptions, delete_offering_exception. Shared finaliser _commit_offering_exception (flush → IntegrityError → 409 'duplicate_exception', audit row, _rematerialise_for_event, commit, refresh). Shared auth helper _require_offering_actor (admin always wins; teacher must own the offering; HOD must own the course's department)."
+    - "academic/service.py — _detach_class_sessions_from_exception helper soft-deletes any class_sessions referencing the exception before the FK delete runs. Both the admin (delete_timetable_exception) and the new teacher/HOD (delete_offering_exception) paths use it. Fixes a latent bug in the existing admin delete that would have raised ForeignKeyViolation whenever the materialiser had already produced a class_session from the exception."
+    - "academic/schemas.py — AdHocExtraCreate, AdHocRescheduleCreate, AdHocRoomChangeCreate. Each schema is tight to the kind: extra needs date+times+room; reschedule needs date+times (room optional); room_change needs date+room (times stay from the parent slot)."
+    - "academic/router.py — POST /offerings/{id}/timetable-exceptions/{extra,reschedule,room-change}; GET /offerings/{id}/timetable-exceptions (list); DELETE /offerings/{id}/timetable-exceptions/{exception_id}. All five gated by Depends(require_teacher_hod_or_admin) and then by the service-layer ownership check."
+    - "attendance/service.py — UNTOUCHED. The materialiser already consumes the four TimetableExceptionKind values; the new endpoints feed rows in the same shape the admin endpoint produced, so re-materialisation works without changes."
+  tests:
+    - "+10 critical-path tests in test_attendance.py: extra creates class_session of source='extra' (verified by querying ClassSession directly); reschedule anchors to recurring slot; room_change anchors to recurring slot with times NULL; reschedule on a non-slot weekday returns 400 'no_matching_slot'; bad time (end <= start) returns 400; student role rejected by the dependency layer; non-owner teacher → 403 'forbidden'; HOD of other dept → 403; list + delete round-trip works after the FK-detach fix; duplicate reschedule on (slot, date) → 409 'duplicate_exception'."
+    - "Full suite: 160 passed (147 baseline + 3 from Session 1 + 10 new ad-hoc tests)."
+  frontend:
+    - "apps/web/app/teacher/courses/[id]/page.tsx — new course-hub page. Header shows course code+title+term+semester+type, with Configure-scheme and Take-attendance deep links. Ad-hoc panel below with three tabs (Extra / Reschedule / Room change), per-tab react-hook-form + zod schemas, plus a 'Recent exceptions' table with inline delete (confirm dialog → DELETE → refetch). The Configure / Attendance buttons link to the existing /teacher/courses/[id]/scheme and /teacher/attendance pages."
+  seed:
+    - "infra/scripts/seed.py — DEPT_SPECS cut from 7 depts to 4 (CSE deep + ISE/ECE/CSE-DS stubs). New SCOPE dict + is_deep() / students_per_section(dept_code) / batch_years_for(dept_code) helpers replace the old hardcoded STUDENTS_PER_SECTION=40 and full-BATCH_YEARS sweep."
+    - "Deep dept CSE: 2 sections × 30 students × 4 batches = 240 students. Stub depts (ISE, ECE, CSE-DS): 1 section × 5 students × 1 batch (focal year only) = 15 students. Plus 1 legacy student + parents."
+    - "Verified row counts after reset+seed cycle: 606 total users (admin 1 + HODs 4 + teachers 15 + students 256 + parents 330), 4 departments, 7 batches, 11 sections, 66 offerings, 868 class_sessions, 26,040 attendance records. Down from 5,950 users + 52K attendance records pre-narrow."
+    - "AIML / ME / EEE entries removed from DEPT_SPECS and COURSE_CATALOGUE — the demo no longer touches those departments. Cross-dept walkthrough beats (CSE-DS HOD teaching one CSE course) still work because CSE-DS is one of the stubs."
+    - "Focal cohort (CSE 2023 section A) still gets full attendance + marks + hall ticket + grade card history. Legacy test fixtures teacher@bmsce.ac.in, student@bmsce.ac.in (USN 1BM24CS999 enrolled in CSE 2024-A), hod@bmsce.ac.in preserved."
+  authority_choices:
+    - "OQ B — three endpoints (one per TimetableExceptionKind) over one polymorphic endpoint. Cleaner Pydantic schemas (each kind has its own required fields), simpler error messages, easier UI tab wiring."
+    - "Ownership rule for the new endpoints: actor is admin (always), OR teacher == offering.teacher_user_id, OR HOD whose hod_of_department_id matches the course's department. Cross-dept teaching is supported (the cross-dept teacher counts as the offering's teacher and so passes the teacher leg; the HOD leg checks the course's dept, not the teacher's home dept)."
+    - "Delete cascade: rather than introduce migration 0013 just to add ON DELETE SET NULL on class_sessions.origin_exception_id, the service soft-deletes dependent class_sessions before deleting the exception. _rematerialise_for_event then rebuilds a clean canonical class_session from the parent slot (for non-extra kinds). Extra-kind sessions just vanish, which matches their semantics — they had no recurring parent."
+    - "Seed narrowing kept DEPT_SPECS as the source of truth and added SCOPE on top, instead of rewriting DEPT_SPECS into a richer struct. Smaller diff, easier to revert per-dept if a future walkthrough needs more breadth."
+  closed_audit_items:
+    - "B2 (ad-hoc class sessions) — closed."
+    - "Finding 18 (seed narrow) — closed."
+  deferred_to_session_3_or_later:
+    - "Session 3: tasks one-to-many migration."
+    - "Session 4: ranked elective preferences."
+    - "Session 5: student attendance eligibility surface."
+    - "Session 6: IA polish + docs closure."
+
 audit_session_1:
   status: complete
   date: "2026-05-15"
@@ -892,6 +926,7 @@ frontend:
   hod_lab_batches_page: true   # shipped in M10c
   hod_scheme_templates_page: true   # shipped in M10c
   teacher_course_scheme_page: true   # shipped in M10c (/teacher/courses/[id]/scheme)
+  teacher_course_hub_page: true   # shipped in audit Session 2 (/teacher/courses/[id]) — header + ad-hoc class session panel
   hod_dashboard_scheme_readiness: true   # shipped in M10c
   hod_cie_schedule_page: true   # shipped in M10d
   hod_tasks_page: true   # shipped in M10d
@@ -920,10 +955,10 @@ demo_seed_state:
     - "infra/scripts/seed.py — replaces the v1 seed with a comprehensive BMSCE-shaped demo. Curated Indian names from infra/scripts/_demo_names.py."
     - "Standard cycle: `uv run --project services/api python infra/scripts/reset_demo.py` then `uv run --project services/api python infra/scripts/seed.py`. Full cycle ~10s."
   what_exists_after_seed:
-    institution: "1 college (BMSCE), 7 departments (CSE, ISE, ECE, CSE-DS, AIML, ME, EEE)."
-    users: "~5,950 total — 1 admin, 7 HODs, 47 teachers, ~2,560 students, ~3,330 parents. CSE + ISE have 3 sections per batch; others have 2. ~40 students per section. Hashed once and reused (argon2id is expensive)."
+    institution: "1 college (BMSCE), 4 departments (CSE deep + ISE, ECE, CSE-DS stubs). Narrowed in audit Session 2."
+    users: "~606 total — 1 admin, 4 HODs, 15 teachers, 256 students (240 CSE + 15 stubs + 1 legacy), 330 parents. CSE has 2 sections per batch × 4 batches × 30 students. Stub depts: 1 batch (focal year only) × 1 section × 5 students. Hashed once and reused (argon2id is expensive)."
     terms: "4 academic_terms — 2025-ODD (archived stub), 2025-EVEN (past, fully populated with SEE), 2026-ODD (current, mid-semester), 2026-EVEN (future skeleton). Registration windows closed for current, open in the future."
-    focal_cohort: "CSE 2023 batch (currently sem 7) has the deepest data: full setup + course offerings, 6 wks of class_sessions + 52K attendance rows, CIE-1 marks for ~80% of students, full past-term marks + SEE + grade cards. Other batches have light enrollments only."
+    focal_cohort: "CSE 2023 batch (currently sem 7) has the deepest data: full setup + course offerings, ~26K attendance rows across past+current, CIE-1 marks for ~80% of students, full past-term marks + SEE + grade cards. Stub depts carry only minimal rows for the IA cross-references (HOD list, audit feed, etc.)."
     schemes: "3 institutional templates (Theory / Integrated / NPTEL Standard) + 2 dept templates (CSE programming-heavy, ECE lab-heavy). Each offering instantiates from the matching template. CSE-Sem7-Compiler-Design has AAT=30% with an `assessment_scheme_unlock` academic_override audit row."
     electives: "CSE Professional Elective III has 4 options — one healthy, one under-strength (HOD-dashboard callout), one dissolved with 3 migrated students. CSE-DS has its own Domain Elective II group."
     workflow_data: "120 hall_tickets (HOD-approved), 120 grade_cards (one in v2 with trigger_reason='see_released' for the focal student #1), 98 see_results (96 originals + 2 re-eval revised), 2 re_evaluations (improved + held), 42 CIE schedule entries (CIE-1 + CIE-2 published), 9 tasks (mixed states), 8 internal_deadlines, 5 academic_overrides (condonations + scheme unlock + lab incharge + mark unlock + student migration), 11 admin_notifications."
@@ -933,8 +968,8 @@ demo_seed_state:
     accounts:
       - "admin@bmsce.ac.in — admin"
       - "hod@bmsce.ac.in — CSE HOD (focal dept). Legacy address so existing pytest fixtures keep working."
-      - "hod-ise@bmsce.ac.in (and hod-ece, hod-cse-ds, hod-aiml, hod-me, hod-eee) — other HODs."
-      - "teacher-cse-1@bmsce.ac.in (and -2 through -8) — CSE teachers."
+      - "hod-ise@bmsce.ac.in (and hod-ece, hod-cse-ds) — stub-dept HODs."
+      - "teacher-cse-1@bmsce.ac.in (and -2 through -8) — CSE teachers. Stub depts have teacher-{ise,ece,cse-ds}-1 / -2."
       - "student-1bm23cs001@bmsce.ac.in — focal student (CSE 2023, USN 1BM23CS001). Has a v2 grade card from the late-SEE flow."
       - "parent-1bm23cs001-1@bmsce.ac.in — focal student's first parent."
       - "teacher@bmsce.ac.in + student@bmsce.ac.in — legacy demo users retained for test_marks / test_academic / test_m2_rework fixtures. The student carries USN 1BM24CS999 and is enrolled in CSE-2024-A current term."
