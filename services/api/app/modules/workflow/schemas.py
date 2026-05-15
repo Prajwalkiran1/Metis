@@ -191,13 +191,20 @@ class RegistrationOptionView(BaseModel):
     is_full: bool
 
 
+class PreferenceEntry(BaseModel):
+    option_id: UUID
+    rank: int  # 1..3, 1 is the most-preferred
+
+
 class RegistrationGroupView(BaseModel):
     elective_group_id: UUID
     name: str
     description: str | None = None
     required_credits: int | None = None
     options: list[RegistrationOptionView]
-    chosen_option_id: UUID | None = None  # the student's current pick, if any
+    # Audit Session 4 — replaces the single-pick `chosen_option_id` with a
+    # rank-ordered list. Empty when the student has not submitted prefs yet.
+    preferences: list[PreferenceEntry] = []
 
 
 class MandatoryCourseView(BaseModel):
@@ -232,15 +239,50 @@ class StudentRegistrationView(BaseModel):
     mandatory_courses: list[MandatoryCourseView] = []
     groups: list[RegistrationGroupView] = []
     migration_alert: dict | None = None  # set when status='migrated' rows exist
+    # Audit Session 4 — set when status='needs_intervention' rows exist for
+    # this student in this setup. Drives the red dashboard banner.
+    intervention_alert: dict | None = None
 
 
-class RegistrationChoice(BaseModel):
+class GroupRankedChoice(BaseModel):
     elective_group_id: UUID
-    elective_group_option_id: UUID
+    # Length 1..3 — list position carries the rank. ranked_option_ids[0] is
+    # the 1st choice (required), [1] is 2nd (optional fallback), [2] is 3rd.
+    ranked_option_ids: list[UUID] = Field(min_length=1, max_length=3)
 
 
 class StudentRegistrationSubmit(BaseModel):
-    choices: list[RegistrationChoice]
+    choices: list[GroupRankedChoice]
+
+
+class CommittedCourseEntry(BaseModel):
+    """One row in the closed-state unified view (audit B6 + B7)."""
+
+    course_id: UUID
+    course_code: str
+    course_title: str
+    course_type: CourseType
+    status: Literal["enrolled", "migrated_from", "needs_intervention"]
+    # Set when status='migrated_from' — the option's course code the student
+    # was originally enrolled on before the cascade moved them.
+    migrated_from_option_label: str | None = None
+    # The offering for the current placement; None for needs_intervention.
+    offering_id: UUID | None = None
+    # The slot's elective_group label when this is an elective row. NULL for mandatory.
+    elective_group_name: str | None = None
+
+
+class CommittedView(BaseModel):
+    semester_setup_id: UUID | None = None
+    academic_term_code: str | None = None
+    department_code: str | None = None
+    courses: list[CommittedCourseEntry] = []
+
+
+class ResolveNeedsInterventionRequest(BaseModel):
+    student_id: UUID
+    to_option_id: UUID
+    reason: str = Field(min_length=1, max_length=2000)
 
 
 class RegistrationRowOut(BaseModel):
@@ -290,7 +332,9 @@ class ElectiveGroupEnrollmentView(BaseModel):
 
 # ── M10b: dissolve + manual migrate + cap ──────────────────────────────────
 class DissolveRequest(BaseModel):
-    target_option_id: UUID
+    # Audit Session 4 — target_option_id removed. The cascade walks each
+    # student's ranked preferences individually now; the HOD no longer
+    # picks one target for everyone.
     reason: str = Field(min_length=1, max_length=2000)
     evidence_url: str | None = None
 
@@ -312,6 +356,9 @@ class CapRequest(BaseModel):
 # dissolve / migrate / cap commit response so the UI gets uniform shape.
 class CascadeSummary(BaseModel):
     students_migrated: int
+    # Audit Session 4 — set on dissolve cascades that exhaust preferences.
+    # 0 on manual migrate / explicit-target cap paths.
+    students_needing_intervention: int = 0
     attendance_records_preserved: int
     marks_preserved: int
     lab_batch_memberships_removed: int

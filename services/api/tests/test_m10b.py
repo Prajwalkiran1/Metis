@@ -402,7 +402,20 @@ async def _register_student(
     headers: dict[str, str],
     fx: Fixture,
     option_id: uuid.UUID,
+    rank_2_option_id: uuid.UUID | None = None,
+    rank_3_option_id: uuid.UUID | None = None,
 ) -> dict:
+    """Audit Session 4 — submits a ranked preference list.
+
+    Pass only `option_id` for backwards-compatible single-pick behaviour
+    (rank-1 only). Pass `rank_2_option_id` / `rank_3_option_id` to set the
+    fallbacks.
+    """
+    ranked = [str(option_id)]
+    if rank_2_option_id is not None:
+        ranked.append(str(rank_2_option_id))
+    if rank_3_option_id is not None:
+        ranked.append(str(rank_3_option_id))
     r = await client.post(
         "/student/registration/electives",
         headers=headers,
@@ -410,7 +423,7 @@ async def _register_student(
             "choices": [
                 {
                     "elective_group_id": str(fx.eg_id),
-                    "elective_group_option_id": str(option_id),
+                    "ranked_option_ids": ranked,
                 }
             ]
         },
@@ -431,7 +444,7 @@ async def test_student_registers_during_window(client):
     assert body["window"]["is_open"] is True
     assert body["window"]["reason"] == "open"
     assert len(body["groups"]) == 1
-    assert body["groups"][0]["chosen_option_id"] is None
+    assert body["groups"][0]["preferences"] == []
 
     rows = await _register_student(
         client, headers=h, fx=fx, option_id=fx.option_alpha_id
@@ -440,9 +453,10 @@ async def test_student_registers_during_window(client):
     assert rows[0]["status"] == "approved"
     assert rows[0]["elective_group_option_id"] == str(fx.option_alpha_id)
 
-    # Re-fetch the view; chosen_option_id is set.
+    # Re-fetch the view; preferences is the rank-ordered list.
     view2 = await client.get("/student/registration", headers=h)
-    assert view2.json()["groups"][0]["chosen_option_id"] == str(fx.option_alpha_id)
+    prefs = view2.json()["groups"][0]["preferences"]
+    assert prefs == [{"option_id": str(fx.option_alpha_id), "rank": 1}]
 
 
 # ── 2. Outside-window registration blocked ─────────────────────────────────
@@ -467,7 +481,7 @@ async def test_student_cannot_register_outside_window(client):
             "choices": [
                 {
                     "elective_group_id": str(fx.eg_id),
-                    "elective_group_option_id": str(fx.option_alpha_id),
+                    "ranked_option_ids": [str(fx.option_alpha_id)],
                 }
             ]
         },
@@ -521,30 +535,34 @@ async def test_student_can_update_registration_idempotently(client):
 @pytest.mark.asyncio
 async def test_hod_dissolve_cascades(client):
     fx = await _build_fixture(num_students=3)
-    # Register all 3 students on option_alpha
+    # Register all 3 students with rank-1=alpha, rank-2=beta so the cascade
+    # walks them onto beta when alpha dissolves.
     for sid in fx.student_ids:
         sh = await _login_student_by_id(client, sid)
         await _register_student(
-            client, headers=sh, fx=fx, option_id=fx.option_alpha_id
+            client,
+            headers=sh,
+            fx=fx,
+            option_id=fx.option_alpha_id,
+            rank_2_option_id=fx.option_beta_id,
         )
     hod_h = await _login(client, HOD_EMAIL)
     r = await client.post(
         f"/workflow/elective-groups/{fx.eg_id}/options/{fx.option_alpha_id}/dissolve",
         headers=hod_h,
-        json={
-            "target_option_id": str(fx.option_beta_id),
-            "reason": "low enrolment",
-        },
+        json={"reason": "low enrolment"},
     )
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["summary"]["students_migrated"] == 3
-    # elective.dissolved event payload shape
+    assert body["summary"]["students_needing_intervention"] == 0
+    # elective.dissolved event payload shape (no target_option_id anymore)
     ev = body["event"]
     assert ev["event"] == "elective.dissolved"
     assert ev["data"]["student_count_migrated"] == 3
     assert ev["data"]["dissolved_option_id"] == str(fx.option_alpha_id)
-    assert ev["data"]["target_option_id"] == str(fx.option_beta_id)
+    assert ev["data"]["students_needing_intervention"] == 0
+    assert "target_option_id" not in ev["data"]
 
     # course_registrations: 3 'migrated' + 3 new 'approved' on beta
     async with SessionLocal() as s:
@@ -578,10 +596,11 @@ async def test_hod_dissolve_cascades(client):
         ]
         assert len(student_migs) == 3
 
-        # option flipped
+        # option flipped — no specific migrated_to_option_id now (cascade
+        # may have fanned to multiple targets; we leave the pointer NULL).
         opt_a = await s.get(ElectiveGroupOption, fx.option_alpha_id)
         assert opt_a.is_dissolved is True
-        assert opt_a.migrated_to_option_id == fx.option_beta_id
+        assert opt_a.migrated_to_option_id is None
 
 
 # ── 6. Preview returns counts without mutating ─────────────────────────────
@@ -591,16 +610,17 @@ async def test_dissolve_preview_does_not_mutate(client):
     for sid in fx.student_ids:
         sh = await _login_student_by_id(client, sid)
         await _register_student(
-            client, headers=sh, fx=fx, option_id=fx.option_alpha_id
+            client,
+            headers=sh,
+            fx=fx,
+            option_id=fx.option_alpha_id,
+            rank_2_option_id=fx.option_beta_id,
         )
     hod_h = await _login(client, HOD_EMAIL)
     pre = await client.post(
         f"/workflow/elective-groups/{fx.eg_id}/options/{fx.option_alpha_id}/dissolve/preview",
         headers=hod_h,
-        json={
-            "target_option_id": str(fx.option_beta_id),
-            "reason": "test",
-        },
+        json={"reason": "test"},
     )
     assert pre.status_code == 200, pre.text
     body = pre.json()
@@ -655,10 +675,7 @@ async def test_dissolve_blocked_for_wrong_dept(client):
     r = await client.post(
         f"/workflow/elective-groups/{fx.eg_id}/options/{fx.option_alpha_id}/dissolve",
         headers=h,
-        json={
-            "target_option_id": str(fx.option_beta_id),
-            "reason": "test",
-        },
+        json={"reason": "test"},
     )
     assert r.status_code == 403, r.text
 
@@ -857,6 +874,9 @@ async def test_student_migrated_event_shape(client, monkeypatch):
         "actor_user_id",
         "data",
     }
+    # Manual migrate keeps the legacy payload (no rank metadata since this
+    # path doesn't walk preferences). Dissolve cascade adds from_rank /
+    # to_rank / chain_depth — covered by test_elective_dissolved_event_shape.
     assert set(sm["data"].keys()) == {
         "student_id",
         "from_course_offering_id",
@@ -890,32 +910,41 @@ async def test_elective_dissolved_event_shape(client, monkeypatch):
     for sid in fx.student_ids:
         sh = await _login_student_by_id(client, sid)
         await _register_student(
-            client, headers=sh, fx=fx, option_id=fx.option_alpha_id
+            client,
+            headers=sh,
+            fx=fx,
+            option_id=fx.option_alpha_id,
+            rank_2_option_id=fx.option_beta_id,
         )
     hod_h = await _login(client, HOD_EMAIL)
     r = await client.post(
         f"/workflow/elective-groups/{fx.eg_id}/options/{fx.option_alpha_id}/dissolve",
         headers=hod_h,
-        json={
-            "target_option_id": str(fx.option_beta_id),
-            "reason": "low enrolment",
-        },
+        json={"reason": "low enrolment"},
     )
     assert r.status_code == 200, r.text
     types = [c[0] for c in captured]
     assert "elective.dissolved" in types
     ed = next(c[1] for c in captured if c[0] == "elective.dissolved")
+    # Audit Session 4 — payload no longer carries target_option_id; instead
+    # it reports students_needing_intervention.
     assert set(ed["data"].keys()) == {
         "elective_group_id",
         "dissolved_option_id",
-        "target_option_id",
         "student_count_migrated",
+        "students_needing_intervention",
         "reason",
     }
     assert ed["data"]["student_count_migrated"] == 2
+    assert ed["data"]["students_needing_intervention"] == 0
     # Two student.migrated events also captured.
     student_events = [c for c in captured if c[0] == "student.migrated"]
     assert len(student_events) == 2
+    # student.migrated payload now carries rank metadata (additive keys).
+    sm = student_events[0][1]
+    assert sm["data"]["from_rank"] == 1
+    assert sm["data"]["to_rank"] == 2
+    assert sm["data"]["chain_depth"] == 2
 
 
 # ── 13. Cascade failure → full rollback ────────────────────────────────────
@@ -925,7 +954,11 @@ async def test_cascade_partial_failure_rolls_back(client, monkeypatch):
     for sid in fx.student_ids:
         sh = await _login_student_by_id(client, sid)
         await _register_student(
-            client, headers=sh, fx=fx, option_id=fx.option_alpha_id
+            client,
+            headers=sh,
+            fx=fx,
+            option_id=fx.option_alpha_id,
+            rank_2_option_id=fx.option_beta_id,
         )
     # Monkey-patch the per-student helper to raise on the 2nd call.
     call_count = {"n": 0}
@@ -945,10 +978,7 @@ async def test_cascade_partial_failure_rolls_back(client, monkeypatch):
     r = await client.post(
         f"/workflow/elective-groups/{fx.eg_id}/options/{fx.option_alpha_id}/dissolve",
         headers=hod_h,
-        json={
-            "target_option_id": str(fx.option_beta_id),
-            "reason": "test",
-        },
+        json={"reason": "test"},
     )
     assert r.status_code == 500, r.text
     assert r.json()["detail"]["code"] == "cascade_failed"
@@ -1084,3 +1114,598 @@ async def test_attendance_and_marks_preserved(client):
     async with SessionLocal() as s:
         assert await s.get(AttendanceRecord, att_id) is not None
         assert await s.get(Mark, mark_id) is not None
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#                        Audit Session 4 — ranked preferences
+# ════════════════════════════════════════════════════════════════════════════
+# The cascade is the highest-risk surface in the new shape. Every test
+# below proves a single edge of the rank-walking algorithm: where the
+# student lands, what the running capacity counter does, when the chain
+# exhausts, and what the events look like.
+
+
+async def _add_third_option(fx: Fixture) -> uuid.UUID:
+    """Augment the fixture with a third option ('gamma') so 3-rank tests
+    have a target for rank-3. Returns the new option id; also creates the
+    backing course and an offering for the fixture's section.
+    """
+    async with SessionLocal() as s:
+        gamma = Course(
+            college_id=fx.college_id,
+            department_id=fx.dept_id,
+            code=f"EL-G-{_short()}",
+            title="Elective Gamma",
+            credits=3,
+            semester=3,
+            course_type=CourseType.theory,
+        )
+        s.add(gamma)
+        await s.flush()
+        offering_gamma = CourseOffering(
+            college_id=fx.college_id,
+            course_id=gamma.id,
+            section_id=fx.section_id,
+            teacher_user_id=fx.teacher_id,
+            academic_term=fx.term_code,
+            academic_term_id=fx.term_id,
+            semester=3,
+            is_active=True,
+        )
+        s.add(offering_gamma)
+        await s.flush()
+        opt_g = ElectiveGroupOption(
+            college_id=fx.college_id,
+            elective_group_id=fx.eg_id,
+            course_id=gamma.id,
+            tentative_teacher_id=fx.teacher_id,
+        )
+        s.add(opt_g)
+        await s.flush()
+        await s.commit()
+        return opt_g.id
+
+
+async def _set_option_cap(option_id: uuid.UUID, cap: int) -> None:
+    async with SessionLocal() as s:
+        opt = await s.get(ElectiveGroupOption, option_id)
+        opt.max_enrollment = cap
+        await s.commit()
+
+
+# ── 15. Submit with full rank-1/2/3 writes 3 prefs + 1 course_reg ──────────
+@pytest.mark.asyncio
+async def test_submit_full_three_ranked_prefs(client):
+    fx = await _build_fixture(num_students=1)
+    opt_g = await _add_third_option(fx)
+    h = await _login_student_by_id(client, fx.student_ids[0])
+    rows = await _register_student(
+        client,
+        headers=h,
+        fx=fx,
+        option_id=fx.option_alpha_id,
+        rank_2_option_id=fx.option_beta_id,
+        rank_3_option_id=opt_g,
+    )
+    # One committed row at rank-1
+    assert len(rows) == 1
+    assert rows[0]["elective_group_option_id"] == str(fx.option_alpha_id)
+    # Three preference rows
+    from app.modules.workflow.models import CourseRegistrationPreference
+
+    async with SessionLocal() as s:
+        prefs = (
+            await s.execute(
+                select(CourseRegistrationPreference)
+                .where(
+                    CourseRegistrationPreference.student_user_id == fx.student_ids[0],
+                    CourseRegistrationPreference.elective_group_id == fx.eg_id,
+                    CourseRegistrationPreference.deleted_at.is_(None),
+                )
+                .order_by(CourseRegistrationPreference.preference_rank)
+            )
+        ).scalars().all()
+    assert len(prefs) == 3
+    assert [p.preference_rank for p in prefs] == [1, 2, 3]
+    assert prefs[0].elective_group_option_id == fx.option_alpha_id
+    assert prefs[1].elective_group_option_id == fx.option_beta_id
+    assert prefs[2].elective_group_option_id == opt_g
+
+
+# ── 16. Submit with rank-1 only is accepted (back-compat) ──────────────────
+@pytest.mark.asyncio
+async def test_submit_rank_1_only(client):
+    fx = await _build_fixture(num_students=1)
+    h = await _login_student_by_id(client, fx.student_ids[0])
+    await _register_student(client, headers=h, fx=fx, option_id=fx.option_alpha_id)
+    from app.modules.workflow.models import CourseRegistrationPreference
+
+    async with SessionLocal() as s:
+        prefs = (
+            await s.execute(
+                select(CourseRegistrationPreference).where(
+                    CourseRegistrationPreference.student_user_id == fx.student_ids[0],
+                    CourseRegistrationPreference.elective_group_id == fx.eg_id,
+                    CourseRegistrationPreference.deleted_at.is_(None),
+                )
+            )
+        ).scalars().all()
+    assert len(prefs) == 1
+    assert prefs[0].preference_rank == 1
+
+
+# ── 17. Submit rejects duplicate options within a group ────────────────────
+@pytest.mark.asyncio
+async def test_submit_rejects_duplicate_options_in_group(client):
+    fx = await _build_fixture(num_students=1)
+    h = await _login_student_by_id(client, fx.student_ids[0])
+    r = await client.post(
+        "/student/registration/electives",
+        headers=h,
+        json={
+            "choices": [
+                {
+                    "elective_group_id": str(fx.eg_id),
+                    "ranked_option_ids": [
+                        str(fx.option_alpha_id),
+                        str(fx.option_alpha_id),
+                    ],
+                }
+            ]
+        },
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "duplicate_option_in_group"
+
+
+# ── 18. Submit rejects rank-2 pointing at a dissolved option ───────────────
+@pytest.mark.asyncio
+async def test_submit_rejects_rank_2_dissolved(client):
+    fx = await _build_fixture(num_students=1)
+    # Dissolve beta out-of-band; rank-2=beta should reject.
+    async with SessionLocal() as s:
+        beta = await s.get(ElectiveGroupOption, fx.option_beta_id)
+        beta.is_dissolved = True
+        await s.commit()
+    h = await _login_student_by_id(client, fx.student_ids[0])
+    r = await client.post(
+        "/student/registration/electives",
+        headers=h,
+        json={
+            "choices": [
+                {
+                    "elective_group_id": str(fx.eg_id),
+                    "ranked_option_ids": [
+                        str(fx.option_alpha_id),
+                        str(fx.option_beta_id),
+                    ],
+                }
+            ]
+        },
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "option_dissolved"
+
+
+# ── 19. Submit allows rank-2 pointing at a currently-full option ───────────
+@pytest.mark.asyncio
+async def test_submit_allows_rank_2_full(client):
+    # Build a fixture, register S1 to fill beta's cap (1), then S2 submits
+    # rank-1=alpha, rank-2=beta(full). Accepted — fallbacks tolerate full.
+    fx = await _build_fixture(num_students=2)
+    await _set_option_cap(fx.option_beta_id, 1)
+    s1, s2 = fx.student_ids
+    h1 = await _login_student_by_id(client, s1)
+    await _register_student(client, headers=h1, fx=fx, option_id=fx.option_beta_id)
+    # Now beta is full. S2 submits with beta as rank-2 fallback.
+    h2 = await _login_student_by_id(client, s2)
+    rows = await _register_student(
+        client,
+        headers=h2,
+        fx=fx,
+        option_id=fx.option_alpha_id,
+        rank_2_option_id=fx.option_beta_id,
+    )
+    assert rows[0]["status"] == "approved"
+
+
+# ── 20. Re-submit replaces preferences; rank-1 course_reg created_at stable
+@pytest.mark.asyncio
+async def test_resubmit_replaces_prefs_and_preserves_created_at(client):
+    fx = await _build_fixture(num_students=1)
+    opt_g = await _add_third_option(fx)
+    h = await _login_student_by_id(client, fx.student_ids[0])
+    rows1 = await _register_student(
+        client,
+        headers=h,
+        fx=fx,
+        option_id=fx.option_alpha_id,
+        rank_2_option_id=fx.option_beta_id,
+    )
+    reg_id_1 = rows1[0]["id"]
+    created_at_1 = rows1[0]["created_at"]
+    await asyncio.sleep(0.05)
+
+    # Re-submit with a fully different set of prefs.
+    rows2 = await _register_student(
+        client,
+        headers=h,
+        fx=fx,
+        option_id=fx.option_beta_id,
+        rank_2_option_id=opt_g,
+        rank_3_option_id=fx.option_alpha_id,
+    )
+    # Same course_registrations row id, same created_at — patched in place.
+    assert rows2[0]["id"] == reg_id_1
+    assert rows2[0]["created_at"] == created_at_1
+    assert rows2[0]["elective_group_option_id"] == str(fx.option_beta_id)
+
+    from app.modules.workflow.models import CourseRegistrationPreference
+
+    async with SessionLocal() as s:
+        live = (
+            await s.execute(
+                select(CourseRegistrationPreference)
+                .where(
+                    CourseRegistrationPreference.student_user_id == fx.student_ids[0],
+                    CourseRegistrationPreference.elective_group_id == fx.eg_id,
+                    CourseRegistrationPreference.deleted_at.is_(None),
+                )
+                .order_by(CourseRegistrationPreference.preference_rank)
+            )
+        ).scalars().all()
+        soft_deleted = (
+            await s.execute(
+                select(CourseRegistrationPreference).where(
+                    CourseRegistrationPreference.student_user_id == fx.student_ids[0],
+                    CourseRegistrationPreference.elective_group_id == fx.eg_id,
+                    CourseRegistrationPreference.deleted_at.is_not(None),
+                )
+            )
+        ).scalars().all()
+    assert len(live) == 3
+    assert live[0].elective_group_option_id == fx.option_beta_id
+    assert live[1].elective_group_option_id == opt_g
+    assert live[2].elective_group_option_id == fx.option_alpha_id
+    # Old prefs got soft-deleted, not hard-removed.
+    assert len(soft_deleted) >= 2
+
+
+# ── 21. Dissolve cohort splits: rank-2 capped → some walk to rank-3 ────────
+@pytest.mark.asyncio
+async def test_dissolve_cohort_splits_between_rank_2_and_rank_3(client):
+    """3 students register rank-1=alpha, rank-2=beta(cap=1), rank-3=gamma.
+    When alpha dissolves, only one student fits on beta; the other two
+    walk to gamma. FIFO order on alpha decides who gets beta.
+    """
+    fx = await _build_fixture(num_students=3)
+    opt_g = await _add_third_option(fx)
+    await _set_option_cap(fx.option_beta_id, 1)
+
+    registered_in_order: list[uuid.UUID] = []
+    for sid in fx.student_ids:
+        sh = await _login_student_by_id(client, sid)
+        await _register_student(
+            client,
+            headers=sh,
+            fx=fx,
+            option_id=fx.option_alpha_id,
+            rank_2_option_id=fx.option_beta_id,
+            rank_3_option_id=opt_g,
+        )
+        registered_in_order.append(sid)
+        await asyncio.sleep(0.01)
+
+    hod_h = await _login(client, HOD_EMAIL)
+    r = await client.post(
+        f"/workflow/elective-groups/{fx.eg_id}/options/{fx.option_alpha_id}/dissolve",
+        headers=hod_h,
+        json={"reason": "test"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["summary"]["students_migrated"] == 3
+    assert body["summary"]["students_needing_intervention"] == 0
+
+    # First registrant goes to beta (rank-2). Other two to gamma (rank-3).
+    async with SessionLocal() as s:
+        beta_students = (
+            await s.execute(
+                select(CourseRegistration.student_user_id).where(
+                    CourseRegistration.elective_group_option_id == fx.option_beta_id,
+                    CourseRegistration.status == "approved",
+                )
+            )
+        ).all()
+        gamma_students = (
+            await s.execute(
+                select(CourseRegistration.student_user_id).where(
+                    CourseRegistration.elective_group_option_id == opt_g,
+                    CourseRegistration.status == "approved",
+                )
+            )
+        ).all()
+    beta_ids = {r[0] for r in beta_students}
+    gamma_ids = {r[0] for r in gamma_students}
+    assert beta_ids == {registered_in_order[0]}
+    assert gamma_ids == set(registered_in_order[1:])
+
+
+# ── 22. Chain exhausted → needs_intervention row + event ───────────────────
+@pytest.mark.asyncio
+async def test_dissolve_exhausts_chain_writes_needs_intervention(client, monkeypatch):
+    """Student registers rank-1=alpha only. Alpha dissolves. Chain is
+    immediately exhausted (no rank-2/3). The student gets a
+    needs_intervention row + a student.needs_intervention event.
+    """
+    captured: list[tuple[str, dict[str, Any]]] = []
+    from app.core import event_bus
+
+    async def _capture(event, data, *, college_id, actor_user_id):
+        payload = event_bus.build_event_payload(
+            event, data, college_id=college_id, actor_user_id=actor_user_id
+        )
+        captured.append((event, payload))
+        return payload
+
+    monkeypatch.setattr(event_bus, "publish", _capture)
+    import sys
+
+    sys.modules["app.modules.workflow.router"].publish_event = _capture  # type: ignore[attr-defined]
+
+    fx = await _build_fixture(num_students=1)
+    h = await _login_student_by_id(client, fx.student_ids[0])
+    await _register_student(client, headers=h, fx=fx, option_id=fx.option_alpha_id)
+
+    hod_h = await _login(client, HOD_EMAIL)
+    r = await client.post(
+        f"/workflow/elective-groups/{fx.eg_id}/options/{fx.option_alpha_id}/dissolve",
+        headers=hod_h,
+        json={"reason": "ran out of rank fallbacks"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["summary"]["students_migrated"] == 0
+    assert body["summary"]["students_needing_intervention"] == 1
+
+    # needs_intervention row exists in course_registrations.
+    async with SessionLocal() as s:
+        rows = (
+            await s.execute(
+                select(CourseRegistration).where(
+                    CourseRegistration.student_user_id == fx.student_ids[0],
+                    CourseRegistration.elective_group_id == fx.eg_id,
+                    CourseRegistration.deleted_at.is_(None),
+                )
+            )
+        ).scalars().all()
+        statuses = sorted(r.status for r in rows)
+        # 'migrated' (the old approved row) + 'needs_intervention' (placeholder)
+        assert statuses == ["migrated", "needs_intervention"]
+        intervention = next(r for r in rows if r.status == "needs_intervention")
+        assert intervention.elective_group_option_id is None
+        assert intervention.course_id == fx.course_alpha_id
+
+    types = [c[0] for c in captured]
+    assert "student.needs_intervention" in types
+    ni = next(c[1] for c in captured if c[0] == "student.needs_intervention")
+    assert ni["data"]["student_id"] == str(fx.student_ids[0])
+    assert ni["data"]["dissolved_option_id"] == str(fx.option_alpha_id)
+
+
+# ── 23. Dissolve preview matches commit-time outcomes ──────────────────────
+@pytest.mark.asyncio
+async def test_dissolve_preview_projects_outcomes(client):
+    """Preview must report the same per-student rank/outcome as commit
+    would produce for the same inputs.
+    """
+    fx = await _build_fixture(num_students=3)
+    opt_g = await _add_third_option(fx)
+    await _set_option_cap(fx.option_beta_id, 1)
+    for sid in fx.student_ids:
+        sh = await _login_student_by_id(client, sid)
+        await _register_student(
+            client,
+            headers=sh,
+            fx=fx,
+            option_id=fx.option_alpha_id,
+            rank_2_option_id=fx.option_beta_id,
+            rank_3_option_id=opt_g,
+        )
+        await asyncio.sleep(0.01)
+
+    hod_h = await _login(client, HOD_EMAIL)
+    pre = await client.post(
+        f"/workflow/elective-groups/{fx.eg_id}/options/{fx.option_alpha_id}/dissolve/preview",
+        headers=hod_h,
+        json={"reason": "preview"},
+    )
+    assert pre.status_code == 200, pre.text
+    body = pre.json()
+    assert body["students_migrated"] == 3
+    assert body["students_needing_intervention"] == 0
+    # First student lands on rank-2; others on rank-3.
+    ranks = sorted([p["to_rank"] for p in body["per_student"] if "to_rank" in p])
+    assert ranks == [2, 3, 3]
+
+
+# ── 24. Cap by_registration_order without target → walks own chain ─────────
+@pytest.mark.asyncio
+async def test_cap_by_registration_order_no_target_walks_chain(client):
+    """4 students register rank-1=alpha, rank-2=beta. Cap alpha at 2 with
+    no explicit target. The 2 latest registrants walk their chain and land
+    on beta.
+    """
+    fx = await _build_fixture(num_students=4)
+    registered_in_order: list[uuid.UUID] = []
+    for sid in fx.student_ids:
+        sh = await _login_student_by_id(client, sid)
+        await _register_student(
+            client,
+            headers=sh,
+            fx=fx,
+            option_id=fx.option_alpha_id,
+            rank_2_option_id=fx.option_beta_id,
+        )
+        registered_in_order.append(sid)
+        await asyncio.sleep(0.01)
+
+    hod_h = await _login(client, HOD_EMAIL)
+    r = await client.post(
+        f"/workflow/elective-groups/{fx.eg_id}/options/{fx.option_alpha_id}/cap",
+        headers=hod_h,
+        json={
+            "max_enrollment": 2,
+            "redistribute_strategy": "by_registration_order",
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["summary"]["students_migrated"] == 2
+    assert body["summary"]["students_needing_intervention"] == 0
+
+    # The two LATER registrants landed on beta.
+    async with SessionLocal() as s:
+        beta_students = (
+            await s.execute(
+                select(CourseRegistration.student_user_id).where(
+                    CourseRegistration.elective_group_option_id == fx.option_beta_id,
+                    CourseRegistration.status == "approved",
+                )
+            )
+        ).all()
+    beta_ids = {r[0] for r in beta_students}
+    assert beta_ids == set(registered_in_order[2:])
+
+
+# ── 25. HOD resolves a needs_intervention row → status flips to approved ──
+@pytest.mark.asyncio
+async def test_resolve_needs_intervention_flips_to_approved(client):
+    fx = await _build_fixture(num_students=1)
+    h = await _login_student_by_id(client, fx.student_ids[0])
+    await _register_student(client, headers=h, fx=fx, option_id=fx.option_alpha_id)
+
+    # Dissolve alpha — no fallbacks → needs_intervention row.
+    hod_h = await _login(client, HOD_EMAIL)
+    r = await client.post(
+        f"/workflow/elective-groups/{fx.eg_id}/options/{fx.option_alpha_id}/dissolve",
+        headers=hod_h,
+        json={"reason": "no fallbacks"},
+    )
+    assert r.status_code == 200, r.text
+
+    # HOD picks beta as the resolution.
+    resolve = await client.post(
+        f"/workflow/elective-groups/{fx.eg_id}/resolve-needs-intervention",
+        headers=hod_h,
+        json={
+            "student_id": str(fx.student_ids[0]),
+            "to_option_id": str(fx.option_beta_id),
+            "reason": "HOD picked beta",
+        },
+    )
+    assert resolve.status_code == 200, resolve.text
+    assert resolve.json()["summary"]["students_migrated"] == 1
+
+    # The intervention row is now status='approved' on beta.
+    async with SessionLocal() as s:
+        approved = (
+            await s.execute(
+                select(CourseRegistration).where(
+                    CourseRegistration.student_user_id == fx.student_ids[0],
+                    CourseRegistration.elective_group_id == fx.eg_id,
+                    CourseRegistration.status == "approved",
+                    CourseRegistration.deleted_at.is_(None),
+                )
+            )
+        ).scalars().all()
+        needs = (
+            await s.execute(
+                select(CourseRegistration).where(
+                    CourseRegistration.student_user_id == fx.student_ids[0],
+                    CourseRegistration.elective_group_id == fx.eg_id,
+                    CourseRegistration.status == "needs_intervention",
+                    CourseRegistration.deleted_at.is_(None),
+                )
+            )
+        ).scalars().all()
+    assert len(approved) == 1
+    assert approved[0].elective_group_option_id == fx.option_beta_id
+    assert len(needs) == 0
+
+
+# ── 26. Migration 0014 backfill: legacy approved regs preserve dissolution
+@pytest.mark.asyncio
+async def test_backfilled_rank_1_pref_drives_cascade(client):
+    """A student whose rank-1 came from the 0014 backfill (no explicit
+    rank-2/3) behaves the same as a fresh rank-1-only submission: when
+    their option dissolves, they land in needs_intervention.
+
+    Simulated by writing only a course_registrations row + a rank-1 pref
+    (mimicking the backfill), then dissolving the option.
+    """
+    fx = await _build_fixture(num_students=1)
+    sid = fx.student_ids[0]
+    # Write the equivalent of a 0014-backfilled state: one approved
+    # course_registrations row + a single rank-1 preference, no rank-2/3.
+    async with SessionLocal() as s:
+        from app.modules.workflow.models import CourseRegistrationPreference
+
+        s.add(
+            CourseRegistration(
+                college_id=fx.college_id,
+                student_user_id=sid,
+                semester_setup_id=fx.setup_id,
+                elective_group_id=fx.eg_id,
+                elective_group_option_id=fx.option_alpha_id,
+                course_id=fx.course_alpha_id,
+                status="approved",
+                is_backlog=False,
+            )
+        )
+        s.add(
+            CourseRegistrationPreference(
+                college_id=fx.college_id,
+                semester_setup_id=fx.setup_id,
+                student_user_id=sid,
+                elective_group_id=fx.eg_id,
+                elective_group_option_id=fx.option_alpha_id,
+                preference_rank=1,
+            )
+        )
+        await s.commit()
+
+    hod_h = await _login(client, HOD_EMAIL)
+    r = await client.post(
+        f"/workflow/elective-groups/{fx.eg_id}/options/{fx.option_alpha_id}/dissolve",
+        headers=hod_h,
+        json={"reason": "no fallbacks ever set"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["summary"]["students_needing_intervention"] == 1
+
+
+# ── 27. Student committed view: locked-in unified list (B6 + B7) ───────────
+@pytest.mark.asyncio
+async def test_committed_view_after_window_close(client):
+    fx = await _build_fixture(num_students=1)
+    h = await _login_student_by_id(client, fx.student_ids[0])
+    await _register_student(client, headers=h, fx=fx, option_id=fx.option_alpha_id)
+
+    # Close the window (move it into the past).
+    async with SessionLocal() as s:
+        setup = await s.get(SemesterSetup, fx.setup_id)
+        setup.registration_opens_at = datetime.now(timezone.utc) - timedelta(days=2)
+        setup.registration_closes_at = datetime.now(timezone.utc) - timedelta(days=1)
+        await s.commit()
+
+    r = await client.get("/student/registration/committed", headers=h)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Elective row present with status='enrolled'.
+    courses = body["courses"]
+    elective_rows = [c for c in courses if c["course_code"].startswith("EL-A-")]
+    assert len(elective_rows) == 1
+    assert elective_rows[0]["status"] == "enrolled"
+    assert elective_rows[0]["offering_id"] is not None
