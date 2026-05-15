@@ -146,6 +146,7 @@ from app.modules.workflow.models import (  # noqa: E402
     SemesterSetup,
     SemesterSetupState,
     Task,
+    TaskAssignment,
     TaskStatus,
     TaskType,
 )
@@ -2334,45 +2335,93 @@ async def seed_deadlines_tasks_overrides(
         counts["deadlines"] += 1
     await session.flush()
 
-    # HOD-CSE assigns 9 tasks to CSE teachers in mixed states
+    # HOD-CSE assigns tasks to CSE teachers in mixed states. 8 single-
+    # assignee tasks span the state machine; one multi-assignee task
+    # demonstrates the post-Session-3 task_assignments shape (three
+    # invigilators on the same CIE — one accepted, one pending, one
+    # declined).
     hod_cse = hods["CSE"]
     cse_teachers = teachers["CSE"]
-    task_states = [
-        TaskStatus.pending, TaskStatus.pending, TaskStatus.pending,
-        TaskStatus.accepted, TaskStatus.accepted,
-        TaskStatus.completed, TaskStatus.completed, TaskStatus.completed,
-        TaskStatus.declined,
+    single_assignee_tasks = [
+        (TaskStatus.pending, "Invigilate CIE-2 for CS501", TaskType.invigilation),
+        (TaskStatus.pending, "Set CIE-2 paper for CS502", TaskType.paper_setting),
+        (TaskStatus.pending, "Evaluate CS505 mid-term scripts", TaskType.evaluation),
+        (TaskStatus.accepted, "Invigilate CIE-2 for CS503", TaskType.invigilation),
+        (TaskStatus.accepted, "Set AAT rubric for CS502", TaskType.paper_setting),
+        (TaskStatus.completed, "Conduct makeup CIE for CS501", TaskType.makeup_exam),
+        (TaskStatus.completed, "Evaluate AAT submissions for CS401", TaskType.evaluation),
+        (TaskStatus.declined, "Invigilate CIE-1 for CS502", TaskType.invigilation),
     ]
-    task_titles = [
-        ("Invigilate CIE-2 for CS501", TaskType.invigilation),
-        ("Set CIE-2 paper for CS502", TaskType.paper_setting),
-        ("Evaluate CS505 mid-term scripts", TaskType.evaluation),
-        ("Invigilate CIE-2 for CS503", TaskType.invigilation),
-        ("Set AAT rubric for CS502", TaskType.paper_setting),
-        ("Conduct makeup CIE for CS501", TaskType.makeup_exam),
-        ("Evaluate AAT submissions for CS401", TaskType.evaluation),
-        ("Invigilate CIE-1 for CS502", TaskType.invigilation),
-        ("Departmental committee duty", TaskType.other),
-    ]
-    for state, (title, ttype) in zip(task_states, task_titles, strict=False):
+    for state, title, ttype in single_assignee_tasks:
         teacher = cse_teachers[RNG.randint(0, len(cse_teachers) - 1)]
+        task = Task(
+            college_id=college_id,
+            assigned_by_user_id=hod_cse.id,
+            task_type=ttype,
+            title=title,
+            description="Assigned via demo seed for /hod/tasks + /teacher/tasks walkthrough.",
+            due_at=NOW + timedelta(days=RNG.randint(3, 21)),
+        )
+        session.add(task)
+        await session.flush()
         session.add(
-            Task(
-                college_id=college_id,
-                assigned_by_user_id=hod_cse.id,
-                assigned_to_user_id=teacher.id,
-                task_type=ttype,
-                title=title,
-                description="Assigned via demo seed for /hod/tasks + /teacher/tasks walkthrough.",
-                due_at=NOW + timedelta(days=RNG.randint(3, 21)),
+            TaskAssignment(
+                task_id=task.id,
+                assignee_user_id=teacher.id,
                 status=state,
-                status_updated_at=NOW - timedelta(days=RNG.randint(1, 14))
-                if state != TaskStatus.pending
-                else None,
-                decline_reason="Conflicting class slot" if state == TaskStatus.declined else None,
+                status_updated_at=(
+                    NOW - timedelta(days=RNG.randint(1, 14))
+                    if state != TaskStatus.pending
+                    else None
+                ),
+                decline_reason=(
+                    "Conflicting class slot"
+                    if state == TaskStatus.declined
+                    else None
+                ),
             )
         )
         counts["tasks"] += 1
+
+    # Multi-assignee showcase — three invigilators for the same CIE.
+    multi_task = Task(
+        college_id=college_id,
+        assigned_by_user_id=hod_cse.id,
+        task_type=TaskType.invigilation,
+        title="Department-wide invigilation pool — CIE-2 hall A/B/C",
+        description=(
+            "Three invigilators share the same CIE. Each transitions their "
+            "own assignment row independently; the HOD dashboard rolls the "
+            "aggregate up via status_counts."
+        ),
+        due_at=NOW + timedelta(days=10),
+    )
+    session.add(multi_task)
+    await session.flush()
+    multi_assignees = [
+        (cse_teachers[0], TaskStatus.accepted),
+        (cse_teachers[1 % len(cse_teachers)], TaskStatus.pending),
+        (cse_teachers[2 % len(cse_teachers)], TaskStatus.declined),
+    ]
+    for teacher, state in multi_assignees:
+        session.add(
+            TaskAssignment(
+                task_id=multi_task.id,
+                assignee_user_id=teacher.id,
+                status=state,
+                status_updated_at=(
+                    NOW - timedelta(days=RNG.randint(1, 5))
+                    if state != TaskStatus.pending
+                    else None
+                ),
+                decline_reason=(
+                    "Travel for conference that week"
+                    if state == TaskStatus.declined
+                    else None
+                ),
+            )
+        )
+    counts["tasks"] += 1
     await session.flush()
 
     # Academic overrides — 3 attendance condonations + 1 mark unlock.
