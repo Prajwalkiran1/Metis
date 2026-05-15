@@ -394,13 +394,13 @@ metis/
 | Module | Status | Skeleton Live? | Features Done | Blocked By |
 |---|---|---|---|---|
 | M1 User Service | 🟢 Complete | Yes | All endpoints + auth + RBAC + Google OAuth + invite flow + (M2 rework) HOD role + bulk-CSV + /users list + /users/{id}/status | — |
-| M2 Academic Service | 🟢 Rework complete | Yes (v1 + 22 new tables in 0007–0009, applied) | M2 rework: USN backfill, HOD role + canonical link, academic_terms, semester_setups, elective_groups, lab_batches, schemes (per-offering + 3 institutional templates), NPTEL, internal_deadlines, cie_schedule, tasks, hall_tickets, grade_cards, see_results, re_evaluations, academic_overrides, eligibility_snapshots, course_drops. **Migrations 0007–0010 applied locally and verified.** | — |
+| M2 Academic Service | 🟢 Rework complete | Yes (v1 + 22 new tables in 0007–0009, applied) | M2 rework: USN backfill, HOD role + canonical link, academic_terms, semester_setups, elective_groups, lab_batches, schemes (per-offering + 3 institutional templates), NPTEL, internal_deadlines, cie_schedule, tasks, hall_tickets, grade_cards, see_results, re_evaluations, academic_overrides, eligibility_snapshots, course_drops. **Migrations 0007–0012 applied locally and verified.** | — |
 | M3 Attendance Service | 🟠 Rework pending | Yes (v1) | v1 shipped; rework adds: eligibility engine, 60%/85% thresholds, deadline freeze integration | M2 rework |
 | M4 Marks Service | 🟠 Rework pending | Yes (v1) | v1 shipped; rework adds: scheme integration, NPTEL grading, SEE versioning, grade cards, re-eval, makeup | M2 rework, M10 |
 | M5 Comms Service | 🔴 Not started | No | — | M1, M2 rework, M10 event bus |
 | M6 Content Service | 🔴 Not started | No | — | M1, M2 rework |
 | M9 Admin Portal + Analytics | 🔴 Not started | No | — | All others |
-| M10 Academic Workflow | 🟡 M10a shipped | Yes (workflow module live) | M10a: SemesterSetup CRUD, course assignment with auto-scheme-link, elective groups+options, self-publish (draft→active), event bus publisher stub, admin_notifications feed, HOD pages + admin notifications page. **M10b–e pending.** | — (for M10b) |
+| M10 Academic Workflow | 🟡 M10a + M10b shipped | Yes (workflow module live) | M10a: SemesterSetup CRUD + self-publish + admin_notifications + event bus publisher. M10b: registration window, student elective registration, HOD elective dissolution + cascade (course_registrations + enrollments cross-section + lab_batch_members + academic_overrides in one transaction), manual migrate, capacity cap, dissolve preview, /student/dashboard + /student/registration + /hod/electives. **M10c–e pending.** | — (for M10c) |
 | M11 Assignments | 🔴 Not started | No | NEW MODULE — assignments, portal+offline modes, AAT linkage, parent visibility | M2 rework, M10, M6 |
 | M7 Learning Engine | ⚫ Deferred | No (scaffold) | AI layer — built last; integration points ready | scaffold exists |
 | M8 Insights + Face Verify | ⚫ Deferred | No (scaffold) | AI layer — built last; M3 face-verify stub swappable | scaffold exists |
@@ -516,23 +516,17 @@ git log -1 --format='%B'         # should NOT contain "Co-Authored-By: Claude" o
 
 ```yaml
 last_updated: "2026-05-15"
-active_module: M10a_shipped
+active_module: M10b_shipped
 
-# IMPORTANT for the next session: M2 rework migrations 0007/0008/0009 are
-# applied on the local dev DB (head is now 0010 after M10a). The full
-# pytest suite passes (86 tests). Next session is M10b (elective
-# registration + dissolution + cascade). Boot order remains:
-# `docker compose -f infra/docker/docker-compose.yml up -d` then
-# `cd services/api && uv run alembic upgrade head` to be safe.
+# Local DB head is now 0012 after M10b. Full pytest suite passes (100 tests).
+# Next session is M10c (Lab Batches + Assessment Scheme Templates +
+# per-offering picker UI). Boot order remains:
+#   docker compose -f infra/docker/docker-compose.yml up -d
+#   cd services/api && uv run alembic upgrade head
 #
-# Pre-existing seed bug to flag (not M10a-caused): infra/scripts/seed.py
-# can insert duplicate academic_calendar rows for 2026-08-15 when
-# previous runs left them un-deduped. Dedupe before re-running:
-#   docker exec metis_postgres psql -U metis -d metis -c "
-#     DELETE FROM academic_calendar WHERE id IN (
-#       SELECT id FROM academic_calendar
-#       WHERE entry_date = '2026-08-15' AND deleted_at IS NULL OFFSET 1
-#     );"
+# Seed academic_calendar fix shipped this session — the lookup now uses
+# scalars().first() instead of scalar_one_or_none() so dev DBs with
+# pre-existing duplicate rows don't crash the seed.
 
 module_states:
 
@@ -618,12 +612,12 @@ module_states:
     next_session_picks_up_at: "After M10"
 
   M10_academic_workflow:
-    status: m10a_shipped
+    status: m10a_and_m10b_shipped
     skeleton_live: true
     scope: "NEW MODULE — see docs/modules/M10.md"
     sub_sessions:
-      a: "✅ shipped — Semester Setup CRUD + self-publish (HOD draft → published → active in one transaction); admin_notifications feed; HOD pages + admin notifications page; event bus publisher stub with stable payload contract"
-      b: "Elective Registration + Dissolution + Cascade"
+      a: "✅ shipped — Semester Setup CRUD + self-publish (HOD draft → active in one transaction); admin_notifications feed; HOD pages + admin notifications page; event bus publisher stub with stable payload contract"
+      b: "✅ shipped — Registration window, student elective registration (idempotent), HOD elective dissolution + cascade (4 tables in one tx), manual single-student migration, capacity cap with by_registration_order / manual modes, dissolve preview (read-only blast radius), /student/dashboard + /student/registration + /hod/electives, /hod/dashboard under-subscribed callout"
       c: "Lab Batches + Assessment Scheme Templates + per-offering picker"
       d: "CIE Scheduling + Tasks + Internal Deadlines + Event Bus (Redis pub/sub, real subscriber side)"
       e: "Hall Tickets + Grade Cards + SEE/Re-eval/Makeup workflows"
@@ -653,14 +647,48 @@ module_states:
         - "Admin notifications feed is sourced from a dedicated table, not from semester_setups, so M5 can wire mark-as-read without leaking state columns into the setup row."
         - "Event publisher logs + best-effort Redis PUBLISH. M10d swaps Redis to required-Redis with retry. Signature is stable."
       deferred_to_m10b_or_later:
-        - "Student-facing elective registration UI (M10b)"
-        - "Elective dissolution + student migration cascade (M10b)"
         - "Lab batch composition (M10c)"
         - "HOD-side assessment scheme picker (M10c) — for now M10a auto-links the institutional template"
         - "CIE scheduling + tasks + internal deadlines (M10d)"
         - "Hall tickets + grade cards + SEE/re-eval/makeup (M10e)"
+    m10b_shipped:
+      schema:
+        - "Migration 0011 — semester_setups.registration_opens_at / registration_closes_at + window-order CHECK (verify_0011.sql)"
+        - "Migration 0012 — elective_group_options.max_enrollment + positive-cap CHECK (verify_0012.sql)"
+      backend:
+        - "services/api/app/modules/workflow/service_m10b.py — registration-window setter; student GET/POST/status; HOD enrollment view; _perform_student_migration (cascade core, transaction-aware); dissolve preview + commit; manual migrate; cap with by_registration_order or manual"
+        - "services/api/app/modules/workflow/router.py — extended with /workflow/elective-groups/{id}/enrollment, /dissolve(+/preview), /migrate-student, /options/{id}/cap; /workflow/semester-setups/{id}/registration-window; new student_registration_router for /student/registration*"
+        - "academic/models.py — EnrollmentState enum + academic_term_id col on Enrollment ORM (column already existed in DB)"
+        - "workflow/models.py — CourseRegistration, LabBatch, LabBatchMember, AcademicOverride ORM; OverrideType enum; window cols on SemesterSetup; max_enrollment col on ElectiveGroupOption"
+        - "deps.py — require_student dep"
+      cascade_semantics:
+        rule: "ONE transaction wraps the per-student cascade. Caller manages session.begin(); helper writes inside that context. Any failure rolls back all student migrations in the batch."
+        writes:
+          - "course_registrations: old row .status='migrated'; new row created with .status='approved'. Created_at on new row = migration time (later by_registration_order sees them at the end of the queue)."
+          - "enrollments: only mutated when the new offering lives in a different section. Old enrollment → withdrawn_at=NOW + state='migrated'; new enrollment inserted for new section. Within-section: no-op."
+          - "lab_batch_members: rows joined to the OLD offering's lab batches with removed_at=NULL are flipped to removed_at=NOW + removed_reason='migrated_to_other_offering'. New offering's batch composition is M10c."
+          - "academic_overrides: append-only audit, override_type='student_migration', old_value/new_value JSON, reason text."
+        preserved:
+          - "attendance_records (FK to class_sessions which FKs course_offerings): untouched. M3 rework's eligibility engine reads course_registrations.status to ignore migrated electives."
+          - "marks (FK to assessments which FK course_offerings): untouched. parent_visible flag stays as-is."
+        post_commit:
+          - "elective.dissolved event (dissolve flow)"
+          - "student.migrated events — one per moved student"
+      ui:
+        - "/student/dashboard — window status, registration-progress callout, migration alert when course_registrations.status='migrated' exists"
+        - "/student/registration — window-aware page with mandatory courses table + group-pick cards. Submit/Update label adapts to whether prior choices exist."
+        - "/hod/electives — setup + group pickers, live enrollment table with under/over/healthy badges, per-option Cap and Dissolve dialogs (preview-before-confirm + type-the-name confirmation for dissolve), manual migrate dialog, per-option student lists below"
+        - "/hod/dashboard — under-subscribed-count callout linking to /hod/electives"
+        - "student shell — Dashboard + Registration nav entries"
+      tests: "services/api/tests/test_m10b.py — 14 critical paths incl. window enforcement, idempotent re-submit, full cascade verification across all touched tables, preview is read-only, wrong-dept block, manual-to-dissolved reject, capacity redistribute order correctness, manual cap displaced-list mode, event payload shapes, transactional rollback on simulated downstream failure, attendance + marks preserved"
+      authority_choices:
+        - "Enrollment cascade: section-aware. Within-section migrations don't mutate enrollments; cross-section does. The M3 rework eligibility engine will read course_registrations.status='migrated' to discount the elective from the old offering's count without disrupting the section enrollment."
+        - "Order tie-break: by_registration_order uses (created_at ASC, id ASC). Re-submission while window open patches the existing row, so re-pick doesn't bump you to the back of the queue. New migrated rows have a fresh created_at, so newly arrived migrants land at the tail."
+        - "Manual into dissolved: rejected with target_dissolved. Reviving a dissolved option is out of scope."
+        - "Preview auth: same require_hod_for_dept as dissolve. Same RBAC keeps the implementation simple."
+        - "Notifications: emit student.migrated event only; M5 will wire user-facing notifications. M10b ships a temporary /student/dashboard banner for the migrated case that reads course_registrations.status directly."
     blocked_by: none
-    next_session_picks_up_at: "M10b — Elective Registration + Dissolution + Cascade"
+    next_session_picks_up_at: "M10c — Lab Batches + Assessment Scheme Templates + per-offering picker UI"
 
   M11_assignments:
     status: not_started
@@ -711,12 +739,15 @@ frontend:
   auth_pages: true
   admin_shell: true
   teacher_shell: true
-  student_shell: true
+  student_shell: true   # M10b: Dashboard + Registration nav entries added
   parent_shell: true
-  hod_shell: true   # shipped in M2 rework (placeholder dashboard only)
+  hod_shell: true   # M10b: Electives nav entry enabled
   admin_users_page: true   # shipped in M2 rework
   hod_semester_setup_pages: true   # shipped in M10a (index + editor)
   admin_notifications_page: true   # shipped in M10a
+  student_dashboard_page: true   # shipped in M10b
+  student_registration_page: true   # shipped in M10b
+  hod_electives_page: true   # shipped in M10b
 
 infrastructure:
   supabase_project_created: false
