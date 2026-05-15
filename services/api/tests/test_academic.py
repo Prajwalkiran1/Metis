@@ -76,7 +76,11 @@ async def test_departments_crud_and_soft_delete(client):
     assert r.status_code == 201, r.text
     dept_id = r.json()["id"]
 
-    lst = await client.get("/departments", headers=h)
+    # Accumulated test cruft can push the dept past the default page limit;
+    # ask for a wide window so the assertion isn't a function of how many
+    # times the suite has run.
+    big = {"limit": "200"}
+    lst = await client.get("/departments", headers=h, params=big)
     assert lst.status_code == 200
     codes = [d["code"] for d in lst.json()["items"]]
     assert code in codes
@@ -84,12 +88,14 @@ async def test_departments_crud_and_soft_delete(client):
     dele = await client.delete(f"/departments/{dept_id}", headers=h)
     assert dele.status_code == 204
 
-    lst2 = await client.get("/departments", headers=h)
+    lst2 = await client.get("/departments", headers=h, params=big)
     codes2 = [d["code"] for d in lst2.json()["items"]]
     assert code not in codes2
 
     lst3 = await client.get(
-        "/departments", headers=h, params={"include_deleted": "true"}
+        "/departments",
+        headers=h,
+        params={"limit": "200", "include_deleted": "true"},
     )
     codes3 = [d["code"] for d in lst3.json()["items"]]
     assert code in codes3
