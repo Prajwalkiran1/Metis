@@ -517,21 +517,20 @@ git log -1 --format='%B'         # should NOT contain "Co-Authored-By: Claude" o
 
 ```yaml
 last_updated: "2026-05-15"
-active_module: audit_session_4_ranked_elective_preferences
+active_module: audit_session_5_attendance_eligibility_surface
 
-# Local DB head is now 0014 — Session 4 adds course_registration_preferences
-# (ranked elective intent, 1..3 per student per group) and backfills every
-# existing approved elective registration as rank-1. course_registrations
-# stays as the committed-enrolment surface; a new status string
-# 'needs_intervention' marks rows whose preference chain exhausted.
-# Pytest suite at 176 (Session 1: +3 gating; Session 2: +10 ad-hoc endpoint;
-# Session 3: +3 net new task tests; Session 4: +13 ranked-prefs cascade
-# tests + 6 existing-tests-rewritten). Boot order:
+# Local DB head stays at 0014 — Session 5 is a pure consumer of the
+# existing M10e eligibility engine, no schema changes. Adds
+# GET /attendance/me/eligibility-summary plus per-course cards on the
+# student attendance page. Pytest suite at 182 (Session 1: +3 gating;
+# Session 2: +10 ad-hoc endpoint; Session 3: +3 net new task tests;
+# Session 4: +13 ranked-prefs cascade + 6 existing-tests-rewritten;
+# Session 5: +6 eligibility-summary tests). Boot order:
 #   docker compose -f infra/docker/docker-compose.yml up -d
 #   cd services/api && uv run alembic upgrade head
 #
-# Audit Sessions 1–4 shipped. The audit rework plan lives in
-# AUDIT_FINDINGS.md at repo root; Sessions 5–6 follow in order.
+# Audit Sessions 1–5 shipped. The audit rework plan lives in
+# AUDIT_FINDINGS.md at repo root; Session 6 closes the cycle.
 #
 # Audit closures from the walkthrough that needed no code:
 # - B1: teacher manual attendance already ships in /teacher/attendance
@@ -839,6 +838,32 @@ module_states:
     status: deferred
     scaffold_only: true
     note: "Empty FastAPI scaffold in services/insights-engine/ with /health. M3 face stub swappable. Build last."
+
+audit_session_5:
+  status: complete
+  date: "2026-05-15"
+  scope: "Student attendance eligibility surface — see AUDIT_FINDINGS.md Session 5 (closes F8 + A3)"
+  schema: "no migration — pure consumer of the existing M10e eligibility engine."
+  backend:
+    - "attendance/service.py — new get_student_eligibility_summary(student, term_id=None) aggregator. Resolves the student's active enrollment for the requested term (defaults to most-recent active), pulls offerings under their section, and delegates each subject's threshold computation to workflow.service_m10e.compute_subject_eligibility. Cross-module import is one-way: attendance → workflow.service_m10e (workflow already imports attendance models, so no cycle)."
+    - "attendance/schemas.py — new CourseEligibility + EligibilitySummary shapes. Field names mirror compute_subject_eligibility's return dict (attendance_percent, cie_percent, attendance_eligible, cie_eligible, overall_eligible, reason) so engine changes flow through without churn."
+    - "attendance/router.py — new GET /attendance/me/eligibility-summary?term_id=<optional> with require_student dep. Read-only — pure aggregation over the eligibility engine."
+  tests: "test_attendance_eligibility.py — 6 new tests (above-85%, between-60-85%, below-60% + low-CIE, NPTEL waived, HOD-blocked RBAC, term_id round-trip). Re-uses test_m10e's _build_fixture so we plant attendance + CIE marks at known thresholds without duplicating the fixture builder. Full suite: 182 passed (176 baseline + 6 new)."
+  frontend:
+    - "apps/web/app/student/attendance/page.tsx — fetches /attendance/me/eligibility-summary alongside today's sessions; renders a new 'Eligibility this term' card above the submit panel with per-course tiles (course code + title, large attendance %, Attendance ≥85% badge, CIE ≥40% badge with current %, overall eligible/ineligible chip, reason string when ineligible). NPTEL subjects render a 'eligibility waived' note instead of the badges. Card hides entirely when the student has no enrollment yet (non-fatal 404 swallowed)."
+  authority_choices:
+    - "Aggregator lives in the attendance module — the endpoint is /attendance/me/eligibility-summary, the cross-module import (workflow.service_m10e.compute_subject_eligibility) is one function and keeps the eligibility engine as single source of truth."
+    - "Response shape passes through compute_subject_eligibility's existing return keys (attendance_percent, cie_percent, attendance_eligible, cie_eligible, overall_eligible, reason). The audit doc's suggested names (cie_threshold_met / see_threshold_met) were renamed-for-UX-only; using the engine's vocabulary means future M3 rework changes flow through without router churn."
+    - "Threshold labels in the UI reflect what the engine actually checks: attendance ≥85% (the SEE-via-attendance qualification) and CIE ≥40% (the BMSCE internal-marks SEE qualification). The audit doc's 'CIE-60%' wording refers to the per-CIE attendance rule which is a separate metric not in the engine today; that lands when M3 rework ships."
+    - "Condonation banner deferred — compute_subject_eligibility does not expose condonation info today; the eligibility_snapshots table has the column but no producer writes it. Surfacing the banner is M3 rework work, not Session 5."
+    - "term_id query param is optional. Default behaviour: most-recent active enrollment by enrolled_at DESC. Pass term_id to view a past term's eligibility (useful for the focal CSE 2023 student who has historical data)."
+    - "Card hidden gracefully when the eligibility endpoint returns no courses — empty state is implicit (no card rendered) rather than a 'no data' message; the existing 'Today's classes' panel still shows."
+  closed_audit_items:
+    - "F8 (attendance % with eligibility indicators) — closed. Per-course cards render attendance %, 85%, and 40% badges."
+    - "A3 (compute_subject_eligibility has no UI consumer) — closed. The aggregator is now wired to /student/attendance."
+  deferred_to_session_6_or_later:
+    - "Session 6: IA polish + docs closure (HOD dashboard year-tabbed cards, electives inline in semester-setup, lab batches nested under integrated offerings, teacher dashboard, marks charts, final docs)."
+    - "Out of scope / M3 rework: condonation banner, per-CIE attendance (60% rule), live recompute on attendance entry."
 
 audit_session_4:
   status: complete
