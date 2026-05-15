@@ -128,6 +128,7 @@ from app.modules.workflow.models import (  # noqa: E402
     AdminNotification,
     CIESchedule,
     CourseRegistration,
+    CourseRegistrationPreference,
     DeadlineKind,
     ElectiveGroup,
     ElectiveGroupOption,
@@ -1570,6 +1571,7 @@ async def register_focal_batch_electives(
         return 0
 
     migrated_count = 0
+    needs_intervention_count = 0
     for group_name, options in groups.items():
         active_opts = [o for o in options if not o.is_dissolved]
         dissolved_opts = [o for o in options if o.is_dissolved]
@@ -1577,12 +1579,39 @@ async def register_focal_batch_electives(
         # gets the least (under-strength signal for HOD dashboard).
         if not active_opts:
             continue
+
+        def _write_prefs(student: User, rank_opts: list[ElectiveGroupOption]) -> None:
+            """Audit Session 4 — write up to 3 ranked preference rows for
+            this (student, group). Skips already-used options at lower
+            ranks to satisfy the partial-unique-option-within-group index.
+            """
+            seen: set[uuid.UUID] = set()
+            rank = 1
+            for opt in rank_opts:
+                if rank > 3 or opt.id in seen:
+                    continue
+                seen.add(opt.id)
+                session.add(
+                    CourseRegistrationPreference(
+                        college_id=college_id,
+                        semester_setup_id=setup.id,
+                        student_user_id=student.id,
+                        elective_group_id=opt.elective_group_id,
+                        elective_group_option_id=opt.id,
+                        preference_rank=rank,
+                    )
+                )
+                rank += 1
+
         for i, student in enumerate(all_students):
             if dept_code == "CSE" and dissolved_opts and i < 3:
-                # 3 students were on the dissolved option, migrated to the
-                # survivor. Write a course_registration row with
-                # status='migrated' so /student/dashboard banner triggers.
+                # 3 demo students were on the dissolved option. Their rank-1
+                # was the dissolved option, rank-2 was the survivor; the
+                # cascade walks them to rank-2 — mimic the post-cascade
+                # state with course_registrations + ranked prefs as if the
+                # walk already happened.
                 migrated_count += 1
+                # Original committed seat → 'migrated'.
                 session.add(
                     CourseRegistration(
                         college_id=college_id,
@@ -1595,7 +1624,7 @@ async def register_focal_batch_electives(
                         is_backlog=False,
                     )
                 )
-                # New row pointing at the survivor (matches the cascade output)
+                # New committed seat on the survivor.
                 session.add(
                     CourseRegistration(
                         college_id=college_id,
@@ -1608,35 +1637,89 @@ async def register_focal_batch_electives(
                         is_backlog=False,
                     )
                 )
+                # Ranked preferences: rank-1 was the dissolved option,
+                # rank-2 was the survivor.
+                _write_prefs(student, [dissolved_opts[0], active_opts[0]])
                 continue
-            # Skew distribution: 50% to first option, 30% second, 15%
-            # third, 5% fourth (if present). Creates one healthy, one
+
+            if (
+                dept_code == "CSE"
+                and dissolved_opts
+                and i == 3
+                and len(all_students) > 3
+            ):
+                # One demo student set ONLY a rank-1 on the dissolved option
+                # and provided no fallback — the cascade puts them on a
+                # needs_intervention row. Mirror that here so the HOD page's
+                # queue has at least one entry.
+                needs_intervention_count += 1
+                session.add(
+                    CourseRegistration(
+                        college_id=college_id,
+                        student_user_id=student.id,
+                        semester_setup_id=setup.id,
+                        elective_group_id=dissolved_opts[0].elective_group_id,
+                        elective_group_option_id=dissolved_opts[0].id,
+                        course_id=dissolved_opts[0].course_id,
+                        status="migrated",
+                        is_backlog=False,
+                    )
+                )
+                session.add(
+                    CourseRegistration(
+                        college_id=college_id,
+                        student_user_id=student.id,
+                        semester_setup_id=setup.id,
+                        elective_group_id=dissolved_opts[0].elective_group_id,
+                        elective_group_option_id=None,
+                        course_id=dissolved_opts[0].course_id,
+                        status="needs_intervention",
+                        is_backlog=False,
+                    )
+                )
+                _write_prefs(student, [dissolved_opts[0]])
+                continue
+
+            # Skew distribution for rank-1: 50% to first option, 30% second,
+            # 15% third, 5% fourth (if present). Creates one healthy, one
             # under-strength on /hod/electives.
             r = RNG.random()
             if r < 0.50:
-                pick = active_opts[0]
+                rank_1 = active_opts[0]
             elif r < 0.80 and len(active_opts) > 1:
-                pick = active_opts[1]
+                rank_1 = active_opts[1]
             elif r < 0.95 and len(active_opts) > 2:
-                pick = active_opts[2]
+                rank_1 = active_opts[2]
             elif len(active_opts) > 3:
-                pick = active_opts[3]
+                rank_1 = active_opts[3]
             else:
-                pick = active_opts[-1]
+                rank_1 = active_opts[-1]
+
+            # Fallbacks: shuffled remaining active options. Most students
+            # set 2-3 ranks; a few set only rank-1 (RNG.random() < 0.20).
+            remaining = [o for o in active_opts if o.id != rank_1.id]
+            RNG.shuffle(remaining)
+            ranks = [rank_1]
+            if remaining and RNG.random() >= 0.20:
+                ranks.append(remaining[0])
+                if len(remaining) > 1 and RNG.random() >= 0.40:
+                    ranks.append(remaining[1])
+            _write_prefs(student, ranks)
+
             session.add(
                 CourseRegistration(
                     college_id=college_id,
                     student_user_id=student.id,
                     semester_setup_id=setup.id,
-                    elective_group_id=pick.elective_group_id,
-                    elective_group_option_id=pick.id,
-                    course_id=pick.course_id,
+                    elective_group_id=rank_1.elective_group_id,
+                    elective_group_option_id=rank_1.id,
+                    course_id=rank_1.course_id,
                     status="approved",
                     is_backlog=False,
                 )
             )
     await session.flush()
-    return migrated_count
+    return migrated_count + needs_intervention_count
 
 
 # ─────────────────────────────────────────────────────────────────────────────
