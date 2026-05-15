@@ -356,9 +356,9 @@ function FeedRows({
                   ) : row.record.state === "recorded" ? (
                     <Badge tone="green">recorded</Badge>
                   ) : row.record.state === "flagged" ? (
-                    <Badge tone="amber" title={row.record.flagged_reason ?? ""}>
-                      flagged
-                    </Badge>
+                    <span title={row.record.flagged_reason ?? ""}>
+                      <Badge tone="amber">flagged</Badge>
+                    </span>
                   ) : (
                     <Badge>{row.record.state}</Badge>
                   )}
