@@ -80,6 +80,9 @@ DEMO_USERS = [
     ("admin@bmsce.ac.in", "BMSCE Admin", UserRole.admin),
     ("teacher@bmsce.ac.in", "BMSCE Teacher", UserRole.teacher),
     ("student@bmsce.ac.in", "BMSCE Student", UserRole.student),
+    # HOD demo user — linked to the CSE department after the department row
+    # is created (see _seed_academic below).
+    ("hod@bmsce.ac.in", "BMSCE CSE HOD", UserRole.hod),
 ]
 
 
@@ -230,6 +233,23 @@ async def _seed_academic(session: AsyncSession, *, college_id) -> None:
             code="CSE",
         )
         session.add(dept)
+        await session.flush()
+
+    # ── HOD link ───────────────────────────────────────────────────────────
+    # Wire the seeded HOD user to CSE. Idempotent — only flips the column
+    # when it's null so re-running the seed never trips the
+    # one-HOD-per-dept partial unique index.
+    hod_user = (
+        await session.execute(
+            select(User).where(
+                User.college_id == college_id,
+                User.email == "hod@bmsce.ac.in",
+                User.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if hod_user is not None and hod_user.hod_of_department_id is None:
+        hod_user.hod_of_department_id = dept.id
         await session.flush()
 
     # ── Batch ───────────────────────────────────────────────────────────────
