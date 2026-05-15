@@ -1,7 +1,7 @@
 "use client";
 
-import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -131,12 +131,9 @@ const addOptionSchema = z.object({
 });
 type AddOptionForm = z.infer<typeof addOptionSchema>;
 
-export default function SemesterSetupEditorPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const { id } = use(params);
+export default function SemesterSetupEditorPage() {
+  const params = useParams<{ id: string }>();
+  const id = params?.id ?? "";
   const router = useRouter();
   const [setup, setSetup] = useState<SemesterSetupDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
