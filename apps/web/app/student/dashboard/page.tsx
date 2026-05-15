@@ -28,9 +28,10 @@ type StudentRegistrationView = {
   groups: {
     elective_group_id: string;
     name: string;
-    chosen_option_id: string | null;
+    preferences: { option_id: string; rank: number }[];
   }[];
   migration_alert: { count: number; message: string } | null;
+  intervention_alert: { count: number; message: string } | null;
 };
 
 function windowLine(v: StudentRegistrationView): string {
@@ -74,7 +75,7 @@ export default function StudentDashboardPage() {
   if (!data) return <Loading />;
 
   const groupsWithChoice = data.groups.filter(
-    (g) => g.chosen_option_id !== null,
+    (g) => g.preferences.length > 0,
   );
   const hasRegistered = groupsWithChoice.length > 0;
   const allChosen =
@@ -106,6 +107,28 @@ export default function StudentDashboardPage() {
               <Link
                 href="/student/registration"
                 className="mt-1 inline-block text-sm text-amber-900 underline"
+              >
+                View registration
+              </Link>
+            </div>
+          </div>
+        </Card>
+      ) : null}
+
+      {data.intervention_alert ? (
+        <Card className="border-red-300 bg-red-50 p-4">
+          <div className="flex items-start gap-3">
+            <Badge tone="red">needs HOD attention</Badge>
+            <div>
+              <p className="text-sm font-medium text-red-900">
+                An elective slot needs HOD attention
+              </p>
+              <p className="text-sm text-red-800">
+                {data.intervention_alert.message}
+              </p>
+              <Link
+                href="/student/registration"
+                className="mt-1 inline-block text-sm text-red-900 underline"
               >
                 View registration
               </Link>
