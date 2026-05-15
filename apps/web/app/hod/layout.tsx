@@ -7,6 +7,7 @@ import clsx from "clsx";
 
 import { getAccessToken, getRole } from "@/lib/auth";
 import { logout } from "@/lib/api";
+import { RoleBadge } from "@/components/RoleBadge";
 
 // Most entries are intentionally disabled. M10 a-e sessions wire them up;
 // this shell only ships the dashboard so the role is reachable.
@@ -51,8 +52,9 @@ export default function HodLayout({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-screen">
       <aside className="w-56 border-r border-zinc-200 bg-white p-3">
-        <div className="mb-5 px-2 text-sm font-semibold text-zinc-900">
-          Metis · HOD
+        <div className="mb-5 px-2">
+          <div className="text-sm font-semibold text-zinc-900">Metis</div>
+          <RoleBadge routeContext="hod" />
         </div>
         <nav className="space-y-1">
           {NAV.map((n) => (

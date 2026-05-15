@@ -7,6 +7,7 @@ import clsx from "clsx";
 
 import { getAccessToken, getRole } from "@/lib/auth";
 import { logout } from "@/lib/api";
+import { RoleBadge } from "@/components/RoleBadge";
 
 const NAV = [
   { href: "/teacher/attendance", label: "Attendance" },
@@ -45,8 +46,9 @@ export default function TeacherLayout({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-screen">
       <aside className="w-56 border-r border-zinc-200 bg-white p-3">
-        <div className="mb-5 px-2 text-sm font-semibold text-zinc-900">
-          Metis · teacher
+        <div className="mb-5 px-2">
+          <div className="text-sm font-semibold text-zinc-900">Metis</div>
+          <RoleBadge routeContext="teacher" />
         </div>
         <nav className="space-y-1">
           {NAV.map((n) => (
