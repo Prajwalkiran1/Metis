@@ -11,6 +11,7 @@ import { logout } from "@/lib/api";
 const NAV = [
   { href: "/admin/academic", label: "Academic" },
   { href: "/admin/users", label: "Users" },
+  { href: "/admin/notifications", label: "Notifications" },
   // Stubs for future modules — kept here so the shell is complete.
   { href: "/admin/reports", label: "Reports", disabled: true },
   { href: "/admin/system", label: "System", disabled: true },
