@@ -516,18 +516,18 @@ git log -1 --format='%B'         # should NOT contain "Co-Authored-By: Claude" o
 
 ```yaml
 last_updated: "2026-05-15"
-active_module: audit_session_2_seed_narrow_and_ad_hoc_sessions
+active_module: audit_session_3_tasks_one_to_many
 
-# Local DB head stays at 0012 — Session 2 added the teacher/HOD ad-hoc
-# class session endpoints + UI without a migration; the schema already
-# covered all four TimetableExceptionKind values. Pytest suite at 160
-# (Session 1: +3 gating; Session 2: +10 ad-hoc endpoint coverage).
-# Boot order:
+# Local DB head is now 0013 — Session 3 ships the
+# task_assignments table + backfill + drops the per-assignee columns
+# from tasks. Pytest suite at 163 (Session 1: +3 gating; Session 2:
+# +10 ad-hoc endpoint; Session 3: +3 net new task tests after
+# rewriting the existing 5). Boot order:
 #   docker compose -f infra/docker/docker-compose.yml up -d
 #   cd services/api && uv run alembic upgrade head
 #
-# Audit Sessions 1–2 shipped. The audit rework plan lives in
-# AUDIT_FINDINGS.md at repo root; Sessions 3–6 follow in order.
+# Audit Sessions 1–3 shipped. The audit rework plan lives in
+# AUDIT_FINDINGS.md at repo root; Sessions 4–6 follow in order.
 #
 # Audit closures from the walkthrough that needed no code:
 # - B1: teacher manual attendance already ships in /teacher/attendance
@@ -836,6 +836,41 @@ module_states:
     scaffold_only: true
     note: "Empty FastAPI scaffold in services/insights-engine/ with /health. M3 face stub swappable. Build last."
 
+audit_session_3:
+  status: complete
+  date: "2026-05-15"
+  scope: "Tasks one-to-many migration — see AUDIT_FINDINGS.md Session 3"
+  schema:
+    - "Migration 0013_task_assignments — creates task_assignments (id, task_id FK CASCADE, assignee_user_id FK, status, status_updated_at, decline_reason, created_at, updated_at, deleted_at). Partial unique index uq_task_assignments_task_assignee_active on (task_id, assignee_user_id) WHERE deleted_at IS NULL."
+    - "Backfill: one task_assignments row per existing tasks row (status, status_updated_at, decline_reason all copied)."
+    - "tasks loses the per-assignee columns in the same migration: assigned_to_user_id, status, status_updated_at, decline_reason. Task is now a pure header (who assigned what + when due)."
+    - "verify_0013.sql checks: column list, partial unique index, dropped columns, backfill row counts, duplicate-assignment rejection."
+  backend:
+    - "workflow/models.py — new TaskAssignment ORM (TimestampedMixin + SoftDeleteMixin). Task ORM stripped of the dropped columns."
+    - "workflow/schemas.py — TaskAssignmentOut, TaskOut with assignments[] + status_counts + is_complete derived fields, MyTaskAssignmentOut (teacher-side flat row with task header inline), TaskCreate.assignee_user_ids (list, 1-20), TaskAssignmentStatusUpdate."
+    - "workflow/service_m10d.py — _validate_assignee_in_dept lifts the cross-dept guard into a reusable helper. create_task walks the assignee list (de-duped, ordered) and writes N TaskAssignment rows in one tx; any cross-dept assignee rolls back the whole creation. list_tasks now joins via task_assignments for the mine/department/status filters. list_my_task_assignments is the teacher-side flat-row endpoint. update_task_assignment_status replaces update_task_status — accept/decline/complete are assignee-only; cancel is assigner/admin-only. Events still publish task.assigned (with assignee_user_ids[]) and task.status_changed (with assignment_id + assignee_user_id)."
+    - "workflow/router.py — POST /workflow/tasks accepts list, returns TaskOut. New GET /workflow/task-assignments/mine for the teacher view. New POST /workflow/task-assignments/{id}/status replaces the old per-task /tasks/{id}/status. The old endpoint is removed (was only one call site)."
+  tests:
+    - "test_m10d.py — existing 5 task tests rewritten for the new shape. +3 new tests: multi-assignee creation (3 assignees), cross-dept-in-list rollback, partial accept/cancel keeps is_complete=False, /task-assignments/mine returns flat rows."
+    - "Full suite: 163 passed (160 from Sessions 1–2 + net +3 from this session)."
+  frontend:
+    - "apps/web/app/hod/tasks/page.tsx — multi-select assignee picker (scrollable checkbox list inside the New-task dialog), row shows per-assignee status chips with inline cancel buttons for pending/accepted; status_counts shown as a row of badges plus a 'done' chip when is_complete=true."
+    - "apps/web/app/teacher/tasks/page.tsx — reshaped from row-per-task to row-per-assignment. Hits /workflow/task-assignments/mine (the new flat-row endpoint). Accept/Decline/Complete buttons act on the assignment_id, not the task_id."
+  seed:
+    - "infra/scripts/seed.py — 8 single-assignee tasks (covers pending/accepted/completed/declined) + 1 three-invigilator task showcasing the new shape. Total: 9 task rows + 11 task_assignment rows."
+  authority_choices:
+    - "OQ C — same-migration drop. Migration 0013 creates task_assignments + backfills + drops the per-assignee columns from tasks atomically. Cleaner schema, no interim dead column."
+    - "Task aggregate state is derived: TaskOut.status_counts + TaskOut.is_complete are computed at read time from the assignment rows. No denormalised aggregate column on tasks. Trade-off: a small O(N_assignments) loop per task in the list path; partial index keeps lookups fast and the dept queue rarely exceeds tens of tasks."
+    - "task.assigned event payload changed: assigned_to_user_id → assignee_user_ids (list). task.status_changed gains assignment_id + assignee_user_id so subscribers can scope per-assignee notifications without re-querying."
+    - "PUT vs POST /status: kept POST to match the existing /tasks/{id}/status semantics; just the path swapped to /task-assignments/{id}/status."
+    - "Cancellation lives on the assignment row, not the task — HOD can cancel one assignee while leaving the rest active. If the entire task should be cancelled, the HOD cancels every assignment individually (typically 1-3 calls). Bulk-cancel-at-task-level can land later if the workflow demands it."
+  closed_audit_items:
+    - "B15 (tasks one-to-many) — closed."
+  deferred_to_session_4_or_later:
+    - "Session 4: ranked elective preferences."
+    - "Session 5: student attendance eligibility surface."
+    - "Session 6: IA polish + docs closure."
+
 audit_session_2:
   status: complete
   date: "2026-05-15"
@@ -961,7 +996,7 @@ demo_seed_state:
     focal_cohort: "CSE 2023 batch (currently sem 7) has the deepest data: full setup + course offerings, ~26K attendance rows across past+current, CIE-1 marks for ~80% of students, full past-term marks + SEE + grade cards. Stub depts carry only minimal rows for the IA cross-references (HOD list, audit feed, etc.)."
     schemes: "3 institutional templates (Theory / Integrated / NPTEL Standard) + 2 dept templates (CSE programming-heavy, ECE lab-heavy). Each offering instantiates from the matching template. CSE-Sem7-Compiler-Design has AAT=30% with an `assessment_scheme_unlock` academic_override audit row."
     electives: "CSE Professional Elective III has 4 options — one healthy, one under-strength (HOD-dashboard callout), one dissolved with 3 migrated students. CSE-DS has its own Domain Elective II group."
-    workflow_data: "120 hall_tickets (HOD-approved), 120 grade_cards (one in v2 with trigger_reason='see_released' for the focal student #1), 98 see_results (96 originals + 2 re-eval revised), 2 re_evaluations (improved + held), 42 CIE schedule entries (CIE-1 + CIE-2 published), 9 tasks (mixed states), 8 internal_deadlines, 5 academic_overrides (condonations + scheme unlock + lab incharge + mark unlock + student migration), 11 admin_notifications."
+    workflow_data: "120 hall_tickets (HOD-approved), 120 grade_cards (one in v2 with trigger_reason='see_released' for the focal student #1), 98 see_results (96 originals + 2 re-eval revised), 2 re_evaluations (improved + held), 42 CIE schedule entries (CIE-1 + CIE-2 published), 9 tasks + 11 task_assignment rows (1 of those tasks has 3 assignees in mixed states post-Session-3), 8 internal_deadlines, 5 academic_overrides (condonations + scheme unlock + lab incharge + mark unlock + student migration), 11 admin_notifications."
     events: "Best-effort `publish()` calls fire for `semester_setup.published` (7 events) and `grade_card.regenerated` (1 event from the v2 trigger). The M10d subscriber writes admin_notifications when running; the seed also writes them directly so /admin/notifications has content even when Redis is offline."
   walkthrough_logins:
     password: "MetisDemo!2026"
