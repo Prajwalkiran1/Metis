@@ -1011,11 +1011,14 @@ async def get_my_hall_ticket(
     session: AsyncSession, *, student: User, academic_term_id: UUID | None
 ) -> dict[str, Any] | None:
     """Student-side view: their own latest hall ticket for the
-    requested term (or the most recent one if not specified)."""
+    requested term (or the most recent one if not specified).
+    Only returns tickets the HOD has approved — pre-approval state is
+    invisible to students."""
     stmt = select(HallTicket).where(
         HallTicket.college_id == student.college_id,
         HallTicket.student_user_id == student.id,
         HallTicket.deleted_at.is_(None),
+        HallTicket.approved_at.is_not(None),
     )
     if academic_term_id is not None:
         stmt = stmt.where(HallTicket.academic_term_id == academic_term_id)
@@ -1093,8 +1096,15 @@ async def render_hall_ticket_pdf_for_version(
     ticket = await session.get(HallTicket, version.hall_ticket_id)
     if ticket is None or ticket.deleted_at is not None:
         raise WorkflowError("not_found", "hall ticket not found", 404)
-    if actor.role == UserRole.student and ticket.student_user_id != actor.id:
-        raise WorkflowError("forbidden", "not your hall ticket", 403)
+    if actor.role == UserRole.student:
+        if ticket.student_user_id != actor.id:
+            raise WorkflowError("forbidden", "not your hall ticket", 403)
+        if ticket.approved_at is None:
+            raise WorkflowError(
+                "not_yet_released",
+                "hall ticket not yet approved by HOD",
+                404,
+            )
     if actor.role == UserRole.hod:
         # Validate dept ownership.
         from app.modules.academic.models import Batch
@@ -2215,7 +2225,8 @@ async def list_grade_cards(
     student_user_id: UUID | None = None,
 ) -> list[dict[str, Any]]:
     if actor.role == UserRole.student:
-        # Self-only.
+        # Self-only. Students only see finalised cards — pending state
+        # is HOD/admin-internal.
         student_user_id = actor.id
     elif actor.role not in (UserRole.admin, UserRole.hod):
         raise WorkflowError("forbidden", "student/admin/HOD only", 403)
@@ -2223,6 +2234,8 @@ async def list_grade_cards(
         GradeCard.college_id == actor.college_id,
         GradeCard.deleted_at.is_(None),
     )
+    if actor.role == UserRole.student:
+        stmt = stmt.where(GradeCard.is_finalised.is_(True))
     if academic_term_id is not None:
         stmt = stmt.where(GradeCard.academic_term_id == academic_term_id)
     if student_user_id is not None:
@@ -2306,8 +2319,15 @@ async def render_grade_card_pdf_for_version(
     card = await session.get(GradeCard, version.grade_card_id)
     if card is None or card.deleted_at is not None:
         raise WorkflowError("not_found", "grade card not found", 404)
-    if actor.role == UserRole.student and card.student_user_id != actor.id:
-        raise WorkflowError("forbidden", "not your grade card", 403)
+    if actor.role == UserRole.student:
+        if card.student_user_id != actor.id:
+            raise WorkflowError("forbidden", "not your grade card", 403)
+        if not card.is_finalised:
+            raise WorkflowError(
+                "not_yet_released",
+                "grade card not yet finalised",
+                404,
+            )
     if actor.role == UserRole.hod:
         from app.modules.academic.models import Batch
 

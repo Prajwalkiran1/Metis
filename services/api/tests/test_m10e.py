@@ -422,8 +422,14 @@ async def test_hall_ticket_pdf_download_streams_pdf(client):
             "academic_term_id": str(fx.term_id),
         },
     )
+    ticket_id = r.json()["id"]
     version_id = r.json()["versions"][0]["id"]
-    # Student downloads.
+    # HOD must approve before the student can pull the PDF.
+    await client.post(
+        "/workflow/hall-tickets/approve",
+        headers=h,
+        json={"hall_ticket_ids": [ticket_id]},
+    )
     stu = await _login(client, fx.student_email)
     pdf = await client.get(
         f"/workflow/hall-tickets/versions/{version_id}/pdf", headers=stu
@@ -773,6 +779,19 @@ async def test_grade_card_pdf_download(client):
             "student_user_ids": [str(fx.student_id)],
         },
     )
+    # Finalise the card via SEE upload — students only get PDFs of finalised cards.
+    async with SessionLocal() as s:
+        stu_row = await s.get(User, fx.student_id)
+        usn = stu_row.usn
+    await client.post(
+        "/workflow/see-results/upload",
+        headers=h,
+        json={
+            "course_offering_id": str(fx.offering_id),
+            "max_marks": 100.0,
+            "rows": [{"usn": usn, "marks_obtained": 70.0}],
+        },
+    )
     listing = await client.get(
         "/workflow/grade-cards",
         headers=h,
@@ -830,3 +849,166 @@ async def test_event_payloads_emitted(client):
         ).scalars().all()
         # At least one card was regenerated.
         assert len(cards) >= 1
+
+
+# ── Visibility gating (Session 1 audit) ─────────────────────────────────────
+@pytest.mark.asyncio
+async def test_student_sees_no_hall_ticket_until_approved(client):
+    """Hall ticket sits invisible to the student until the HOD batch-approves.
+    Pre-approval generation is HOD-internal state."""
+    fx = await _build_fixture(attendance_present_ratio=0.9, cie_percent=70.0)
+    h = await _login(client, HOD_EMAIL)
+    await client.post(
+        "/workflow/hall-tickets/generate",
+        headers=h,
+        json={
+            "student_user_id": str(fx.student_id),
+            "academic_term_id": str(fx.term_id),
+        },
+    )
+    stu = await _login(client, fx.student_email)
+    pre = await client.get("/workflow/hall-tickets/me", headers=stu)
+    assert pre.status_code == 200
+    assert pre.json() is None
+    # HOD approves.
+    listing = await client.get(
+        "/workflow/hall-tickets",
+        headers=h,
+        params={"academic_term_id": str(fx.term_id)},
+    )
+    ticket_ids = [row["id"] for row in listing.json()]
+    appr = await client.post(
+        "/workflow/hall-tickets/approve",
+        headers=h,
+        json={"hall_ticket_ids": ticket_ids},
+    )
+    assert appr.status_code == 200
+    # Student now sees it.
+    post = await client.get("/workflow/hall-tickets/me", headers=stu)
+    assert post.status_code == 200
+    body = post.json()
+    assert body is not None
+    assert body["approved_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_student_sees_no_grade_card_until_finalised(client):
+    """Pending grade cards (no SEE released yet) are HOD-internal. The
+    student GET returns [] until SEE upload finalises the card."""
+    fx = await _build_fixture(attendance_present_ratio=0.9, cie_percent=70.0)
+    h = await _login(client, HOD_EMAIL)
+    # HOD generates a card while SEE is still pending.
+    gen = await client.post(
+        "/workflow/grade-cards/generate",
+        headers=h,
+        json={
+            "academic_term_id": str(fx.term_id),
+            "student_user_ids": [str(fx.student_id)],
+        },
+    )
+    assert gen.status_code == 200
+    assert gen.json()["is_finalised"] is False
+    stu = await _login(client, fx.student_email)
+    pre = await client.get("/workflow/grade-cards", headers=stu)
+    assert pre.status_code == 200
+    assert pre.json() == []
+    # SEE upload finalises the card.
+    async with SessionLocal() as s:
+        student = await s.get(User, fx.student_id)
+        usn = student.usn
+    see = await client.post(
+        "/workflow/see-results/upload",
+        headers=h,
+        json={
+            "course_offering_id": str(fx.offering_id),
+            "max_marks": 100.0,
+            "rows": [{"usn": usn, "marks_obtained": 70.0}],
+        },
+    )
+    assert see.status_code == 200
+    post = await client.get("/workflow/grade-cards", headers=stu)
+    assert post.status_code == 200
+    rows = post.json()
+    assert len(rows) == 1
+    assert rows[0]["is_finalised"] is True
+
+
+@pytest.mark.asyncio
+async def test_student_pdf_blocked_until_released(client):
+    """Even with a known version_id, the student can't download a PDF
+    until the hall ticket is approved (and the same shape applies to a
+    pending grade card)."""
+    fx = await _build_fixture(attendance_present_ratio=0.9, cie_percent=70.0)
+    h = await _login(client, HOD_EMAIL)
+    # Hall ticket: generate, capture version, attempt student PDF before approval.
+    gen = await client.post(
+        "/workflow/hall-tickets/generate",
+        headers=h,
+        json={
+            "student_user_id": str(fx.student_id),
+            "academic_term_id": str(fx.term_id),
+        },
+    )
+    ht_version_id = gen.json()["versions"][0]["id"]
+    stu = await _login(client, fx.student_email)
+    pre = await client.get(
+        f"/workflow/hall-tickets/versions/{ht_version_id}/pdf", headers=stu
+    )
+    assert pre.status_code == 404
+    # Approve, then download succeeds.
+    listing = await client.get(
+        "/workflow/hall-tickets",
+        headers=h,
+        params={"academic_term_id": str(fx.term_id)},
+    )
+    ticket_ids = [row["id"] for row in listing.json()]
+    await client.post(
+        "/workflow/hall-tickets/approve",
+        headers=h,
+        json={"hall_ticket_ids": ticket_ids},
+    )
+    post = await client.get(
+        f"/workflow/hall-tickets/versions/{ht_version_id}/pdf", headers=stu
+    )
+    assert post.status_code == 200
+    assert post.headers["content-type"].startswith("application/pdf")
+    assert post.content[:4] == b"%PDF"
+    # Grade card: pending → student PDF blocked; SEE → PDF flows.
+    card_gen = await client.post(
+        "/workflow/grade-cards/generate",
+        headers=h,
+        json={
+            "academic_term_id": str(fx.term_id),
+            "student_user_ids": [str(fx.student_id)],
+        },
+    )
+    gc_version_id = card_gen.json()["versions"][0]["id"]
+    pending = await client.get(
+        f"/workflow/grade-cards/versions/{gc_version_id}/pdf", headers=stu
+    )
+    assert pending.status_code == 404
+    async with SessionLocal() as s:
+        student = await s.get(User, fx.student_id)
+        usn = student.usn
+    await client.post(
+        "/workflow/see-results/upload",
+        headers=h,
+        json={
+            "course_offering_id": str(fx.offering_id),
+            "max_marks": 100.0,
+            "rows": [{"usn": usn, "marks_obtained": 70.0}],
+        },
+    )
+    # The SEE flow regenerates a new version_number; fetch the latest.
+    listing = await client.get(
+        "/workflow/grade-cards",
+        headers=h,
+        params={"student_user_id": str(fx.student_id)},
+    )
+    finalised_version_id = listing.json()[0]["versions"][0]["id"]
+    final = await client.get(
+        f"/workflow/grade-cards/versions/{finalised_version_id}/pdf",
+        headers=stu,
+    )
+    assert final.status_code == 200
+    assert final.content[:4] == b"%PDF"
